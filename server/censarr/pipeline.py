@@ -58,10 +58,13 @@ class Cancelled(Exception):
 
 class Pipeline:
     def __init__(self, settings: config.Settings, cache_dir: Path,
-                 should_cancel=None):
+                 should_cancel=None, item: dict | None = None):
         self.settings = settings
         self.cache_dir = cache_dir
         self.should_cancel = should_cancel or (lambda: False)
+        # kind, source, source_id and title of the job: how the media server
+        # is told which item's file changed (see arr.refresh_for).
+        self.item = item or {}
         self.job_id: int | None = None
 
     # -- progress plumbing ------------------------------------------------
@@ -279,7 +282,7 @@ class Pipeline:
 
         freed = max(0, before - path.stat().st_size)
         db.forget_cleaned(str(path))
-        note = arr.refresh_for(settings, str(path))
+        note = arr.refresh_for(settings, str(path), **self.item)
         return {"status": "done", "muted": 0, "added_bytes": 0,
                 "message": f"removed the censored track · {freed / 1e6:.0f} MB back · "
                            f"{note}"}
@@ -463,7 +466,7 @@ class Pipeline:
             added = (media.track_bytes(candidate, new_track.audio_index)
                      if new_track else 0)
             media.swap_in(candidate, path, keep_backup=settings.keep_backup)
-            note = arr.refresh_for(settings, str(path))
+            note = arr.refresh_for(settings, str(path), **self.item)
             return {"status": "done", "muted": len(matches), "added_bytes": added,
                     "message": f"added “{settings.track_title}” · "
                                f"{len(matches)} muted · {added / 1e6:.0f} MB · "
@@ -614,19 +617,21 @@ def run_job(job_id: int, settings: config.Settings, cache_dir: Path,
     db.update(job_id, status="running", started_at=time.time(), message="",
               stage="probing", progress=0.0)
     try:
-        pipeline = Pipeline(settings, cache_dir, should_cancel)
-        action = (job["action"] if "action" in job.keys() else "clean") or "clean"
+        keys = job.keys()
+        item = {"kind": job["kind"] if "kind" in keys else "",
+                "source": job["source"] if "source" in keys else "",
+                "source_id": job["source_id"] if "source_id" in keys else "",
+                "title": job["title"]}
+        pipeline = Pipeline(settings, cache_dir, should_cancel, item=item)
+        action = (job["action"] if "action" in keys else "clean") or "clean"
         if action == "remove":
             result = pipeline.remove(job_id, path)
         else:
-            keys = job.keys()
             result = pipeline.run(
                 job_id, path, force=bool(job["force"]), title=job["title"],
                 more_subtitles=lambda work: more_subtitles(
-                    settings, job["kind"] if "kind" in keys else "",
-                    job["source"] if "source" in keys else "",
-                    job["source_id"] if "source_id" in keys else "", path, work,
-                    title=job["title"]))
+                    settings, item["kind"], item["source"], item["source_id"],
+                    path, work, title=job["title"]))
         db.update(job_id, status=result.get("status", "done"),
                   muted=result.get("muted", 0), message=result.get("message", ""),
                   added_bytes=result.get("added_bytes", 0),

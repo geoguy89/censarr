@@ -392,8 +392,8 @@ def plex_refresh(plex_url: str, token: str, path: str) -> str:
 #
 #  The cleaned track itself needs nothing special: it is a standard extra audio
 #  stream in the same container, with a title. Jellyfin lists audio tracks and
-#  shows their titles exactly as Plex does, so "Cleaned - English" appears in
-#  its audio menu without this file being involved at all.
+#  shows their titles exactly as Plex does - once it has read the file again,
+#  which is what jellyfin_refresh is for.
 
 def jellyfin_sessions(url: str, api_key: str) -> list[PlexSession]:
     """Who is watching, as the same shape the Plex path returns.
@@ -447,15 +447,52 @@ def jellyfin_sessions(url: str, api_key: str) -> list[PlexSession]:
     return out
 
 
-def jellyfin_refresh(url: str, api_key: str, path: str) -> str:
-    """Tell Jellyfin one file changed.
+def _jellyfin_reprobe(url: str, api_key: str, item_id: str) -> bool:
+    """Ask Jellyfin to read one item's file again. True when it agreed to."""
+    try:
+        resp = httpx.post(
+            f"{url.rstrip('/')}/Items/{item_id}/Refresh",
+            # FullRefresh is what makes Jellyfin probe the file whatever its
+            # date says. ReplaceAllMetadata is left off on purpose: it would
+            # overwrite a title or description edited by hand. Images are not
+            # asked for at all.
+            params={"metadataRefreshMode": "FullRefresh"},
+            headers=_jf_headers(api_key), timeout=TIMEOUT)
+    except httpx.HTTPError:
+        return False
+    return resp.status_code < 300
 
-    /Library/Media/Updated names the path, so Jellyfin re-reads that one file
-    rather than walking the whole library - which on a large collection is the
-    difference between a second and twenty minutes of disk thrashing.
+
+def jellyfin_refresh(url: str, api_key: str, path: str, item_ids=()) -> str:
+    """Have Jellyfin read one file's streams again.
+
+    A notice that a path changed (/Library/Media/Updated) only queues
+    Jellyfin's ordinary refresh, and that probes a file again only when its
+    modification time has moved. The swap keeps that time on purpose (see
+    media.swap_in), so after the notice alone Jellyfin goes on listing the
+    audio tracks the file had before. The item is therefore refreshed by id.
+
+    `item_ids` are the ids the item may have, likeliest first; each may be a
+    callable that looks one up, so a search is only made when it is needed.
+    The path notice remains the fallback for a file Jellyfin does not know as
+    an item yet: it scans the folder and reads a new file in full.
     """
     if not url or not api_key:
         return "not configured"
+    tried = set()
+    for candidate in item_ids:
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception as exc:  # noqa: BLE001 - a lookup must not fail a finished job
+                print(f"[censarr] finding the item in Jellyfin: {exc}", flush=True)
+                continue
+        candidate = str(candidate or "")
+        if not candidate or candidate in tried:
+            continue
+        tried.add(candidate)
+        if _jellyfin_reprobe(url, api_key, candidate):
+            return "Jellyfin: asked it to read the file again"
     try:
         resp = httpx.post(
             f"{url.rstrip('/')}/Library/Media/Updated",
@@ -501,10 +538,24 @@ def sessions_for(settings) -> list[PlexSession]:
     return []
 
 
-def refresh_for(settings, path: str) -> str:
+def refresh_for(settings, path: str, kind: str = "", source: str = "",
+                source_id: str = "", title: str = "") -> str:
+    """Tell the media server a file changed. `kind`, `source`, `source_id` and
+    `title` are the job's, and are how the item is found in Jellyfin."""
     target = refresh_target(settings)
     if target == "jellyfin":
-        return jellyfin_refresh(settings.jellyfin_url, settings.jellyfin_api_key, path)
+        from . import library
+
+        def by_path() -> str:
+            return library.server(settings, "jellyfin").find(kind, path, title)
+
+        # The job's own id is Jellyfin's when the listing came from Jellyfin;
+        # a stale one is refused and the search by path takes over.
+        from_jellyfin = (source == "jellyfin"
+                         or library.source_name(settings) == "jellyfin")
+        return jellyfin_refresh(
+            settings.jellyfin_url, settings.jellyfin_api_key, path,
+            item_ids=(source_id if from_jellyfin else "", by_path))
     if target == "plex":
         return plex_refresh(settings.plex_url, settings.plex_token, path)
     return "no media server configured"

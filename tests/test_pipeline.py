@@ -88,6 +88,34 @@ def test_remove_takes_the_track_back_out(home, settings, fake_asr, episode):
     assert nothing["status"] == "skipped"
 
 
+def test_jellyfin_is_asked_to_read_the_file_again(home, settings, fake_asr, stub, episode):
+    # The swap keeps the file's date, so Jellyfin is told which item to read
+    # again rather than only that a path changed - after a clean and a removal.
+    def items(req):
+        if req.query["IncludeItemTypes"] == ["Series"]:
+            return 200, {"Items": [{"Id": "s1", "Name": "Show"}]}
+        return 200, {"Items": [{"Id": "e1", "ParentIndexNumber": 1, "IndexNumber": 1,
+                                "Path": str(episode)}]}
+    stub.route("GET", "/Items", items)
+    stub.route("POST", "/Items/e1/Refresh", lambda req: (204, b""))
+    settings.media_server = "jellyfin"
+    settings.jellyfin_url, settings.jellyfin_api_key = stub.url, "k"
+    before = episode.stat().st_mtime
+
+    job = run(episode, settings, home / "cache", source="sonarr", source_id="7")
+    assert job["status"] == "done", job["message"]
+    assert "Jellyfin: asked it to read the file again" in job["message"]
+    assert abs(episode.stat().st_mtime - before) < 1         # the date is still kept
+    assert len(stub.seen("/Items/e1/Refresh")) == 1
+
+    removed = run(episode, settings, home / "cache", source="sonarr", source_id="7",
+                  action="remove")
+    assert removed["status"] == "done", removed["message"]
+    assert "Jellyfin: asked it to read the file again" in removed["message"]
+    assert len(stub.seen("/Items/e1/Refresh")) == 2
+    assert not stub.seen("/Library/Media/Updated")
+
+
 def test_a_lookalike_track_is_never_replaced(home, settings, fake_asr, tmp_path):
     src = make_media(tmp_path / "e.mkv", seconds=3.0, title="English")
     settings.track_title = "English"

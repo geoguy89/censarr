@@ -195,11 +195,99 @@ def test_plex_refresh_targets_the_right_section(stub):
 
 
 def test_jellyfin_refresh_names_the_file(stub):
+    # No item to name: the path notice, which is all a new file needs.
     stub.route("POST", "/Library/Media/Updated", {})
     assert "told it" in arr.jellyfin_refresh(stub.url, "k", "/tv/a.mkv")
     req = stub.seen("/Library/Media/Updated")[0]
     assert req.json() == {"Updates": [{"Path": "/tv/a.mkv", "UpdateType": "Modified"}]}
     assert req.headers["authorization"].startswith("MediaBrowser")
+
+
+def jellyfin(stub, known=("e1",)):
+    """A Jellyfin that refreshes the items it knows and takes path notices."""
+    for item in known:
+        stub.route("POST", f"/Items/{item}/Refresh", lambda req: (204, b""))
+    stub.route("POST", "/Library/Media/Updated", lambda req: (204, b""))
+    return stub
+
+
+def test_jellyfin_reads_a_known_item_again(stub):
+    # The swap keeps the file's date, and a path notice makes Jellyfin probe
+    # only a file whose date moved - so the item is refreshed in full by id.
+    jellyfin(stub)
+    note = arr.jellyfin_refresh(stub.url, "k", "/tv/a.mkv", item_ids=("e1",))
+    assert note == "Jellyfin: asked it to read the file again"
+    req = stub.seen("/Items/e1/Refresh")[0]
+    assert req.query == {"metadataRefreshMode": ["FullRefresh"]}   # nothing replaced
+    assert req.headers["authorization"].startswith("MediaBrowser")
+    assert not stub.seen("/Library/Media/Updated")
+
+
+def test_jellyfin_refresh_looks_the_item_up_only_when_it_has_to(stub):
+    jellyfin(stub)
+    looked = []
+
+    def by_path():
+        looked.append(1)
+        return "e1"
+    assert "read the file again" in arr.jellyfin_refresh(
+        stub.url, "k", "/tv/a.mkv", item_ids=("e1", by_path))
+    assert not looked
+    # An id Jellyfin no longer has is refused, and the search takes over.
+    assert "read the file again" in arr.jellyfin_refresh(
+        stub.url, "k", "/tv/a.mkv", item_ids=("gone", by_path))
+    assert looked == [1]
+    assert len(stub.seen("/Items/gone/Refresh")) == 1
+
+
+def test_jellyfin_refresh_falls_back_to_the_path(stub):
+    jellyfin(stub, known=())
+
+    def broken():
+        raise library.LibraryError("could not reach Jellyfin")
+    note = arr.jellyfin_refresh(stub.url, "k", "/tv/a.mkv",
+                                item_ids=("", "gone", broken, lambda: ""))
+    assert note == "Jellyfin: told it the file changed"
+    assert len(stub.seen("/Library/Media/Updated")) == 1
+
+
+def jellyfin_with_a_show(stub, path):
+    def items(req):
+        kind = req.query["IncludeItemTypes"][0]
+        if kind == "Series":
+            named = req.query.get("SearchTerm") == ["Show"]
+            return 200, {"Items": [{"Id": "s1", "Name": "Show"}] if named else []}
+        if kind == "Episode":
+            return 200, {"Items": [
+                {"Id": "e1", "ParentIndexNumber": 1, "IndexNumber": 1, "Path": path}]}
+        return 200, {"Items": []}
+    stub.route("GET", "/Items", items)
+    return jellyfin(stub)
+
+
+def test_refresh_finds_a_sonarr_episode_in_jellyfin(stub):
+    # Sonarr lists the shows, Jellyfin plays them, and each mounts the
+    # library its own way: the item is found by show and file.
+    jellyfin_with_a_show(stub, "/media/tv/Show/e1.mkv")
+    s = config.Settings()
+    s.media_server, s.jellyfin_url, s.jellyfin_api_key = "jellyfin", stub.url, "k"
+    note = arr.refresh_for(s, "/data/tv/Show/e1.mkv", kind="episode",
+                           source="sonarr", source_id="77", title="Show (2020)")
+    assert "read the file again" in note
+    assert not stub.seen("/Items/77/Refresh")              # Sonarr's id is not Jellyfin's
+    assert [r.query["SearchTerm"] for r in stub.seen("/Items")
+            if "SearchTerm" in r.query] == [["Show (2020)"], ["Show"]]
+
+
+def test_refresh_uses_the_id_a_jellyfin_library_gave(stub):
+    jellyfin(stub)
+    s = config.Settings()
+    s.library_source, s.jellyfin_url, s.jellyfin_api_key = "jellyfin", stub.url, "k"
+    # The page files every episode under "sonarr", whatever listed it.
+    assert "read the file again" in arr.refresh_for(
+        s, "/tv/a.mkv", kind="episode", source="sonarr", source_id="e1", title="Show")
+    assert not stub.seen("/Items")                         # no search needed
+    assert "told it" in arr.refresh_for(s, "/tv/new.mkv", kind="file")
 
 
 def test_refresh_target_falls_back_to_the_library():
