@@ -589,10 +589,10 @@ from the Movies page.
 
 ### Films not downloaded yet
 
-With Radarr added (Settings → Your library), **Movies → Not downloaded yet
-(Radarr)** lists every film Radarr has no file for, with when it comes out,
-and **Upcoming** shows the releases due soon — in cinemas, digital, on disc —
-beside Sonarr's episodes, or on their own if your library is Plex or Jellyfin.
+With Radarr added (Settings → Your library), **Movies → All movies** also
+shows every film Radarr has no file for yet, marked *Not downloaded*, and
+**Upcoming** shows films on their digital release date beside Sonarr's
+episodes (or on their own if your library is Plex or Jellyfin).
 Switch on **Censor when it downloads** for one, and it is queued the moment
 its file arrives, ahead of anything else waiting. It works whether or not
 *Censor new films automatically* is on.

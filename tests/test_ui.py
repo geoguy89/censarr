@@ -190,6 +190,26 @@ def test_the_film_switch_turns_on_and_stays_on(desk):
     assert desk.errors == []
 
 
+def test_all_movies_includes_films_not_downloaded_yet(desk):
+    page = desk.go("movies")
+    card = page.locator("#movie-grid .poster", has_text="Northern Lights")
+    card.wait_for()
+    assert "Not downloaded" in card.inner_text()
+    assert "2 not downloaded yet" in page.locator("#movie-count").inner_text()
+    card.get_by_role("button", name=re.compile("^Northern Lights")).click()
+    page.locator("#sheet").wait_for(state="visible")
+    page.locator("#sheet-actions label.switch").click()
+    page.locator(".toast", has_text="will be censored when it downloads").wait_for()
+    assert db.is_monitored("radarr", "901")
+    page.keyboard.press("Escape")
+    assert "Will censor" in page.locator("#movie-grid .poster", has_text="Northern Lights").inner_text()
+    # Narrowed to what is censored, they are not there.
+    page.select_option("#movie-filter", "cleaned")
+    assert page.locator("#movie-grid .poster", has_text="Northern Lights").count() == 0
+    db.monitor_remove("radarr", "901")
+    assert desk.errors == []
+
+
 def test_a_film_not_downloaded_yet_can_be_marked(desk):
     page = desk.go("movies")
     page.select_option("#movie-filter", "wanted")
@@ -222,6 +242,8 @@ def test_upcoming_lists_film_releases_beside_episodes(desk):
     assert "Digital release" in row.inner_text()
     disk = page.locator("#calendar-list .row", has_text="Blue Hour")
     assert "Downloaded" in disk.inner_text() and disk.get_by_role("switch").count() == 0
+    # In cinemas is not a day it can be downloaded: not listed.
+    assert page.locator("#calendar-list .row", has_text="Northern Lights").count() == 0
     assert "2 films" in page.locator("#calendar-count").inner_text()
     row.locator("label.switch").click()
     page.locator(".toast", has_text="will be censored when it downloads").wait_for()

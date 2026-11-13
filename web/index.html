@@ -182,7 +182,7 @@
             <option value="all">All movies</option>
             <option value="cleaned">Censored</option>
             <option value="untouched">Not censored yet</option>
-            <option value="wanted">Not downloaded yet (Radarr)</option>
+            <option value="wanted">Only not downloaded yet (Radarr)</option>
           </select></label>
         <label class="select-inline"><span class="sr-only">Sort</span>
           <select id="movie-sort">
@@ -198,8 +198,8 @@
     <section class="view" id="view-upcoming" data-title="Upcoming" hidden>
       <header class="page-head">
         <h1 tabindex="-1">Upcoming</h1>
-        <p class="lede muted">What is coming: episodes from Sonarr, and film
-          releases from Radarr if you have added it. Switch on <strong>Censor new
+        <p class="lede muted">What is coming: episodes from Sonarr, and films
+          on their digital release date from Radarr if you have added it. Switch on <strong>Censor new
           episodes</strong> for a show, or <strong>Censor when it downloads</strong>
           for a film, and it is censored as it arrives.</p>
       </header>
@@ -761,6 +761,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-<script src="/static/app.js?v=10"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>

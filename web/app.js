@@ -288,14 +288,17 @@ function posterCard(item, kind, index) {
     if (item.failed) chips.push(`<span class="badge failed">${item.failed} failed</span>`);
     if (item.cleaned) chips.push(`<span class="badge done">${item.cleaned}/${item.episodes} censored</span>`);
     if (!item.episodes) chips.push('<span class="badge">No files</span>');
+  } else if (item.notYet) {
+    chips.push('<span class="badge">Not downloaded</span>');
+    if (item.marked) chips.push('<span class="badge auto">Will censor</span>');
   } else if (item.job_status) {
     chips.push(badge(item.job_status));
   }
   const line = kind === 'show'
     ? (item.episodes ? plural(item.episodes, 'episode') : 'nothing downloaded')
-    : (item.home ? ago(item.added) : (item.quality || ''));
-  const action = kind === 'show' ? 'open-show' : 'open-movie';
-  const data = kind === 'show'
+    : (item.notYet ? releaseLine(item) : (item.home ? ago(item.added) : (item.quality || '')));
+  const action = kind === 'show' ? 'open-show' : (item.notYet ? 'open-wanted' : 'open-movie');
+  const data = kind === 'show' || item.notYet
     ? `data-id="${esc(item.id)}" data-title="${esc(item.title)}"`
     : `data-index="${index}" data-list="${item.home ? 'home' : 'movies'}"`;
   const label = `${item.title}${item.year ? ` (${item.year})` : ''}${chips.length ? `, ${
@@ -807,6 +810,7 @@ const loadMovies = once('movies', async () => {
     state.movies = data.items;
     $('#films-auto').checked = !!data.auto;
     renderMovies();
+    if (state.hasRadarr && !state.wanted) loadWanted();
   } catch (err) {
     if (err.status === 401) return;
     state.movies = null;
@@ -817,7 +821,11 @@ ACTIONS['reload-movies'] = loadMovies;
 
 /* Films Radarr has no file for yet. Fetched only when asked for. */
 const loadWanted = once('wanted', async () => {
-  $('#movie-grid').innerHTML = loading('Asking Radarr…', skeletonRows(5));
+  // Only the Radarr-only view waits on this; "All movies" is already drawn
+  // and gains the extra cards when the answer comes.
+  if ($('#movie-filter').value === 'wanted') {
+    $('#movie-grid').innerHTML = loading('Asking Radarr…', skeletonRows(5));
+  }
   try {
     const data = await api('/api/radarr/wanted');
     state.wanted = data;
@@ -827,7 +835,7 @@ const loadWanted = once('wanted', async () => {
     $('#movie-grid').innerHTML = problem('Could not ask Radarr', err.message, 'reload-wanted');
     return;
   }
-  if ($('#movie-filter').value === 'wanted') renderMovies();
+  renderMovies();      // cheap, and right even if fetched behind another page
 });
 ACTIONS['reload-wanted'] = () => { state.wanted = null; loadWanted(); };
 
@@ -901,23 +909,35 @@ ACTIONS['want-film'] = async (box) => {
   const film = (state.wanted?.items || []).find((m) => String(m.id) === String(id));
   if (film) film.marked = on;
   (state.calendar || []).forEach((e) => { if (e.kind === 'film' && String(e.id) === String(id)) e.marked = on; });
-  if (state.view === 'movies' && $('#movie-filter').value === 'wanted') renderMovies();
+  if (state.view === 'movies') renderMovies();
   if (state.view === 'upcoming') renderCalendar();
 };
+
+/* The films Radarr is still waiting for, as poster cards for "All movies".
+   One already listed by the media server (same title and year) is left out. */
+function wantedCards() {
+  const have = new Set((state.movies || []).map((m) => `${(m.title || '').toLowerCase()}|${m.year || ''}`));
+  return (state.wanted?.items || [])
+    .filter((m) => !have.has(`${(m.title || '').toLowerCase()}|${m.year || ''}`))
+    .map((m) => ({ ...m, notYet: true }));
+}
 
 function renderMovies() {
   if ($('#movie-filter').value === 'wanted') { renderWanted(); return; }
   if (!state.movies) return;
   const needle = $('#movie-search').value.trim().toLowerCase();
   const filter = $('#movie-filter').value;
-  const items = state.movies.map((m, index) => ({ ...m, index })).filter((m) => {
+  const waiting = filter === 'all' ? wantedCards() : [];
+  const total = state.movies.length + waiting.length;
+  const items = [...state.movies.map((m, index) => ({ ...m, index })), ...waiting].filter((m) => {
     if (needle && !(m.title || '').toLowerCase().includes(needle)) return false;
     if (filter === 'cleaned') return isDone(m.job_status);
     if (filter === 'untouched') return !m.job_status;
     return true;
   }).sort($('#movie-sort').value === 'recent' ? byRecent : byTitle);
+  const notYet = items.filter((m) => m.notYet).length;
   $('#movie-count').textContent = `${plural(items.length, 'film')}${
-    items.length !== state.movies.length ? ` of ${state.movies.length}` : ''}`;
+    items.length !== total ? ` of ${total}` : ''}${notYet ? ` · ${notYet} not downloaded yet` : ''}`;
   if (!state.movies.length) {
     $('#movie-grid').innerHTML = empty({ icon: 'film', title: 'No films yet',
       text: `${esc(sourceName('movie'))} answered, but has no films with a file.`,
@@ -1177,6 +1197,18 @@ ACTIONS['watch-films'] = async (box) => {
 };
 
 /* ---------------------------------------------------------------- a film */
+
+ACTIONS['open-wanted'] = (el) => {
+  const m = (state.wanted?.items || []).find((f) => String(f.id) === el.dataset.id);
+  if (!m) return;
+  state.sheet = { kind: 'wanted', id: m.id };
+  openSheet(m.title, [m.year, releaseLine(m)].filter(Boolean).join(' · '));
+  $('#sheet-actions').innerHTML = `<label class="switch"><input type="checkbox" role="switch" data-change="want-film"
+      data-id="${esc(m.id)}" data-title="${esc(m.title)}" ${m.marked ? 'checked' : ''}>
+    <span class="track" aria-hidden="true"></span><span>Censor when it downloads</span></label>`;
+  $('#sheet-body').innerHTML = `<p>Radarr has no file for this film yet${m.wanted ? '' : ', and is not looking for one'}.
+    Switch on <strong>Censor when it downloads</strong> and it is censored the moment it arrives.</p>`;
+};
 
 ACTIONS['open-movie'] = (el) => {
   const list = el.dataset.list === 'home' ? state.home.movies : state.movies;
@@ -1487,7 +1519,7 @@ function renderCalendar() {
         <img class="thumb" loading="lazy" decoding="async" alt="" src="${posterUrl(f, 'movie')}" onerror="this.classList.add('none')">
         <div class="grow">
           <div class="title">${esc(f.title)} <span class="muted">${esc([f.year, 'film'].filter(Boolean).join(' · '))}</span></div>
-          <div class="sub">${esc(f.release_kind[0].toUpperCase() + f.release_kind.slice(1))}</div>
+          <div class="sub">Digital release</div>
           ${f.has_file ? '<div class="sub good">Downloaded</div>' : ''}
         </div>
         <div class="actions">

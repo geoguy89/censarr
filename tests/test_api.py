@@ -515,10 +515,10 @@ def test_film_releases_come_from_radarr_even_without_sonarr(client, settings, st
     db.monitor_add("radarr", "4", "Two Releases", "new_only")
     got = client.get("/api/calendar", params={"days": 14}).json()
     assert got["items"] == [] and got["problems"] == []
+    # On the digital release date only: the day it can be downloaded.
     assert [(f["title"], f["airs"], f["release_kind"], f["marked"], f["has_file"])
             for f in got["films"]] == [
         ("Got It", day(1), "digital release", False, True),
-        ("Two Releases", day(2), "in cinemas", True, False),
         ("Two Releases", day(9), "digital release", True, False)]
     assert stub.seen("/api/v3/calendar")[0].query["unmonitored"] == ["false"]
     assert client.get("/api/movies").status_code in (200, 502)   # says whether Radarr is set:
