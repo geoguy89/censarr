@@ -112,7 +112,7 @@ About **2.5 minutes** for a 25-minute episode on an RTX 2070 Super, never above 
 
 ## Also worth knowing
 
-- **Shows can censor themselves** — mark one and episodes downloaded from then on are censored as they arrive.
+- **Shows can censor themselves** — mark one and episodes downloaded from then on are censored as they arrive. One switch does the same for every new film.
 - **The censored track lives inside the media file**, as an extra audio stream, not as a copy of the episode. The file is built in a scratch folder beside the original and swapped in only after it verifies; a failed job leaves the file exactly as it was. Settings, history, the speech model and transcripts live in `/config`.
 - **Your library is only asked what exists.** The one exception is the subtitle search: for a file with no subtitles anywhere, Plex or Jellyfin is asked to find English ones, as its own *Search subtitles* does, and they stay attached there.
 - **A wrong call is one click to fix.** Each job lists every word it muted; "That was wrong" puts the word on a list for next time.

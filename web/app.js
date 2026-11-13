@@ -796,6 +796,7 @@ const loadMovies = once('movies', async () => {
     const data = await api('/api/movies');
     noteSource(data);
     state.movies = data.items;
+    $('#films-auto').checked = !!data.auto;
     renderMovies();
   } catch (err) {
     if (err.status === 401) return;
@@ -1051,6 +1052,28 @@ ACTIONS.watch = async (box) => {
   (state.calendar || []).forEach((e) => { if (String(e.series_id) === String(id)) e.monitored = on; });
   if (state.view === 'shows') renderShows();
   if (state.view === 'upcoming') renderCalendar();
+};
+
+/* The same switch for films: one for the whole library, since a film has no
+   show to mark. Films the media server adds from now on are queued. */
+ACTIONS['watch-films'] = async (box) => {
+  const on = box.checked;
+  box.disabled = true;
+  try {
+    if (on) {
+      await api('/api/monitors', { method: 'POST',
+        body: { source: 'films', source_id: 'new', title: 'New films', mode: 'new_only' } });
+      toast('New films will be censored as they arrive');
+    } else {
+      await api('/api/monitors/films/new', { method: 'DELETE' });
+      toast('New films no longer censored automatically');
+    }
+  } catch (err) {
+    box.checked = !on;
+    throw err;
+  } finally {
+    box.disabled = false;
+  }
 };
 
 /* ---------------------------------------------------------------- a film */
@@ -1355,9 +1378,14 @@ function renderQueue() {
   morph($('#queue-now'), nowCard({ withCancel: true }));
   $('#clear-queue').hidden = !queued.length;
   const ago = data.last_check ? Math.max(0, Math.round((Date.now() / 1000 - data.last_check) / 60)) : null;
-  $('#monitor-status').textContent = data.monitors
-    ? `${plural(data.monitors, 'show')} censoring new episodes. Checked every 10 minutes${
-      ago === null ? '' : `, last ${ago === 0 ? 'just now' : `${ago} min ago`}`}.`
+  const watching = [
+    data.monitors ? `${plural(data.monitors, 'show')} censoring new episodes` : '',
+    data.films_auto ? 'new films censored as they arrive' : '',
+  ].filter(Boolean).join(', and ');
+  $('#monitor-status').textContent = watching
+    ? `${watching[0].toUpperCase()}${watching.slice(1)}. Checked every 10 minutes${
+      ago === null ? '' : `, last ${ago === 0 ? 'just now' : `${ago} min ago`}`}.${
+      data.films_note ? ` ${data.films_note[0].toUpperCase()}${data.films_note.slice(1)}.` : ''}`
     : '';
   renderSelection();
 
@@ -1509,8 +1537,12 @@ $('#check-new').addEventListener('click', async (event) => {
   const btn = event.currentTarget;
   setBusy(btn, true);
   try {
-    const { queued } = await api('/api/monitors/check', { method: 'POST' });
-    toast(queued ? `Queued ${plural(queued, 'new episode')}` : 'Nothing new to censor');
+    const { queued, films = 0 } = await api('/api/monitors/check', { method: 'POST' });
+    const found = [
+      queued - films ? plural(queued - films, 'new episode') : '',
+      films ? plural(films, 'new film') : '',
+    ].filter(Boolean).join(' and ');
+    toast(found ? `Queued ${found}` : 'Nothing new to censor');
     poll();
   } catch (err) { fail(err); } finally { setBusy(btn, false); }
 });

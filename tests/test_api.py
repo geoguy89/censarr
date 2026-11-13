@@ -232,6 +232,70 @@ def test_remove_all_needs_the_phrase(client, settings):
 def test_webhook_test_event(client, settings):
     r = client.post("/api/webhook/sonarr", json={"eventType": "Test"})
     assert r.json()["message"] == "Cens-arr heard you"
+    r = client.post("/api/webhook/radarr", json={"eventType": "Test"})
+    assert r.json()["message"] == "Cens-arr heard you"
+
+
+def settled(calls: list, want: int) -> bool:
+    """The sweep runs on its own thread; give it a moment to be counted."""
+    import time
+    for _ in range(100):
+        if len(calls) >= want:
+            break
+        time.sleep(0.02)
+    return len(calls) == want
+
+
+def radarr_import(path, **extra) -> dict:
+    return {"eventType": "Download", "movie": {"id": 12, "title": "Film", "year": 2021,
+                                               "folderPath": str(Path(path).parent)},
+            "movieFile": {"id": 3, "relativePath": Path(path).name, "path": str(path)},
+            **extra}
+
+
+def test_radarr_webhook_queues_the_film_it_names(client, settings, tmp_path, monkeypatch):
+    swept = []
+    monkeypatch.setattr(main, "_webhook_check", lambda: swept.append(1))
+    monkeypatch.setattr(main, "_films_check", lambda: None)
+    film = tmp_path / "Film (2021)" / "Film (2021).mkv"
+    film.parent.mkdir()
+    film.write_bytes(b"x")
+
+    # The webhook says when; the switch says whether.
+    off = client.post("/api/webhook/radarr", json=radarr_import(film)).json()
+    assert off["queued"] == 0 and "switched off" in off["message"]
+    assert db.next_queued() is None and not swept
+
+    client.post("/api/monitors", json={"source": "films", "source_id": "new",
+                                       "title": "New films", "mode": "new_only"})
+    assert client.post("/api/webhook/radarr", json=radarr_import(film)).json()["queued"] == 1
+    job = db.next_queued()
+    assert (job["kind"], job["title"], job["subtitle"], job["path"], job["source"],
+            job["source_id"]) == ("movie", "Film", "2021", str(film), "radarr", "12")
+    # Told twice (an import and an upgrade arriving together): one job.
+    assert client.post("/api/webhook/radarr", json=radarr_import(film)).json()["queued"] == 0
+    assert len(db.queued_in_order()) == 1
+
+    # An older Radarr gives the folder and the file name, not the whole path.
+    db.update(job["id"], status="done")
+    older = radarr_import(film)
+    del older["movieFile"]["path"]
+    assert client.post("/api/webhook/radarr", json=older).json()["queued"] == 1
+    assert settled(swept, 3)
+
+
+def test_radarr_webhook_leaves_other_news_and_other_mounts_to_the_sweep(
+        client, settings, tmp_path, monkeypatch):
+    swept = []
+    monkeypatch.setattr(main, "_webhook_check", lambda: swept.append(1))
+    db.monitor_add("films", "new", "New films", "new_only")
+    # Radarr sees the film somewhere this container does not: the media server
+    # is asked instead, which the sweep does.
+    there = radarr_import("/somewhere/else/Film.mkv")
+    assert client.post("/api/webhook/radarr", json=there).json()["queued"] == 0
+    assert client.post("/api/webhook/radarr", json={"eventType": "Grab"}).json()["queued"] == 0
+    assert client.post("/api/webhook/radarr", content=b"not json").json()["queued"] == 0
+    assert db.next_queued() is None and settled(swept, 3)
 
 
 def test_file_info(client, settings, tmp_path):
@@ -331,6 +395,10 @@ def test_plex_shows_count_cleaned_episodes_by_name(client, settings, stub):
 def test_check_for_new_episodes_and_clean_anyway(client, settings, monkeypatch):
     monkeypatch.setattr(main.worker, "check_monitored", lambda: 2)
     assert client.post("/api/monitors/check").json()["queued"] == 2
+    main.worker.last_monitor_films = 1
+    said = client.post("/api/monitors/check").json()
+    assert (said["queued"], said["episodes"], said["films"]) == (2, 1, 1)
+    main.worker.last_monitor_films = 0
     main.worker.holding = "someone is watching"
     assert client.post("/api/queue/clean-anyway").json() == {"override": True}
     assert main.worker.override is True and main.worker.holding == ""
@@ -412,6 +480,30 @@ def test_movies_carry_their_job(client, arr_library):
     assert film["job_status"] == "queued" and film["source"] == "plex" and film["id"] == "5"
     assert "added_bytes" in film          # the Remove dialog says what comes back
     assert film["latest"].startswith("2024-02-01T00:00:00")
+
+
+def test_the_film_switch_is_reported_and_is_not_a_show(client, arr_library, monkeypatch):
+    taken, swept = [], []
+    monkeypatch.setattr(main, "_films_check", lambda: taken.append(1))
+    monkeypatch.setattr(main.worker, "_check_shows", lambda *a: swept.append(1) or 0)
+    assert client.get("/api/movies").json()["auto"] is False
+    assert client.get("/api/home").json()["films_auto"] is False
+    client.post("/api/monitors", json={"source": "films", "source_id": "new",
+                                       "title": "New films", "mode": "new_only"})
+    assert client.get("/api/movies").json()["auto"] is True
+    home, jobs = client.get("/api/home").json(), client.get("/api/jobs").json()
+    assert (home["films_auto"], home["monitors"]) == (True, 1)   # one show, as before
+    assert (jobs["films_auto"], jobs["monitors"], jobs["films_note"]) == (True, 1, "")
+    # Switching it on takes in the library at once, not at the next sweep -
+    # the films only, without a sweep of the shows on the side.
+    assert settled(taken, 1)
+    assert main.worker.check_films() == 0 and not swept
+    assert db.films_seen() == {"/m/f.mkv"} and len(db.queued_in_order()) == 1   # as before
+    main.worker.films_note = "9 films appeared at once"
+    assert client.get("/api/jobs").json()["films_note"] == "9 films appeared at once"
+    assert client.delete("/api/monitors/films/new").json() == {"monitored": False}
+    assert client.get("/api/movies").json()["auto"] is False
+    assert db.films_seen() == set() and main.worker.films_note == ""
 
 
 def test_home(client, arr_library):

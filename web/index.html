@@ -165,6 +165,11 @@
     <section class="view" id="view-movies" data-title="Movies" hidden>
       <header class="page-head">
         <h1 tabindex="-1">Movies</h1>
+        <p class="lede">
+          <label class="switch" title="Films your media server adds from now on are censored when they arrive. Nothing already in the library is touched.">
+            <input type="checkbox" role="switch" id="films-auto" data-change="watch-films">
+            <span class="track" aria-hidden="true"></span><span>Censor new films automatically</span></label>
+        </p>
       </header>
       <div class="toolbar" role="search">
         <label class="search">
@@ -225,7 +230,7 @@
       <div id="queue-now"></div>
       <div class="toolbar wrap" id="queue-tools">
         <button type="button" class="btn secondary sm" id="check-new">
-          <svg class="i"><use href="#i-refresh"/></svg>Check for new episodes</button>
+          <svg class="i"><use href="#i-refresh"/></svg>Check for new episodes and films</button>
         <button type="button" class="btn ghost sm danger-text" id="clear-queue" hidden>Empty the queue</button>
       </div>
       <p class="muted small" id="monitor-status"></p>
@@ -734,6 +739,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS job (
   title       TEXT NOT NULL,             -- what a person would call it
   subtitle    TEXT DEFAULT '',           -- S02E04, or the year
   path        TEXT NOT NULL,
-  source      TEXT DEFAULT '',           -- sonarr | plex | jellyfin | manual (radarr: older jobs)
+  source      TEXT DEFAULT '',           -- sonarr | plex | jellyfin | manual | radarr (its webhook, and older jobs)
   source_id   TEXT DEFAULT '',
   status      TEXT NOT NULL DEFAULT 'queued',
   stage       TEXT DEFAULT '',
@@ -53,12 +53,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS job_path_open
 -- Marked automatically when a season or an episode is cleaned, and turned off
 -- again from the show's page.
 CREATE TABLE IF NOT EXISTS monitor (
-  source       TEXT NOT NULL,          -- sonarr
-  source_id    TEXT NOT NULL,          -- the series id
+  source       TEXT NOT NULL,          -- sonarr, or films for the one film switch
+  source_id    TEXT NOT NULL,          -- the series id (films: new)
   title        TEXT DEFAULT '',
   added_at     REAL NOT NULL,
   last_checked REAL DEFAULT 0,
   PRIMARY KEY (source, source_id)
+);
+
+-- Every film the media server has listed since "Censor new films" went on. A
+-- film not in here is a new one. Emptied when the switch goes off, so
+-- switching it on again starts from the library as it stands then.
+CREATE TABLE IF NOT EXISTS film_seen (
+  path TEXT PRIMARY KEY
 );
 
 -- Answers the second opinion has already given. The same word in the same
@@ -496,6 +503,19 @@ def monitor_remove(source: str, source_id: str) -> None:
     conn = connect()
     conn.execute("DELETE FROM monitor WHERE source=? AND source_id=?",
                  (source, str(source_id)))
+    if source == "films":
+        conn.execute("DELETE FROM film_seen")
+    conn.commit()
+
+
+def films_seen() -> set[str]:
+    return {r["path"] for r in connect().execute("SELECT path FROM film_seen")}
+
+
+def films_mark_seen(paths) -> None:
+    conn = connect()
+    conn.executemany("INSERT OR IGNORE INTO film_seen (path) VALUES (?)",
+                     [(str(p),) for p in paths])
     conn.commit()
 
 

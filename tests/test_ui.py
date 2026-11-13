@@ -171,6 +171,25 @@ def test_queue_reorder_keeps_keyboard_focus(desk, demo):
     page.wait_for_timeout(400)
 
 
+def test_the_film_switch_turns_on_and_stays_on(desk):
+    page = desk.go("movies")
+    switch = page.get_by_role("switch", name="Censor new films automatically")
+    assert not switch.is_checked()
+    page.locator("#view-movies label.switch").click()
+    page.locator(".toast", has_text="New films will be censored").wait_for()
+    assert db.is_monitored("films", "new")
+    page.reload()
+    page.wait_for_load_state("networkidle")
+    assert page.get_by_role("switch", name="Censor new films automatically").is_checked()
+    queue = desk.go("queue")
+    assert "new films censored as they arrive" in queue.locator("#monitor-status").inner_text().lower()
+    page = desk.go("movies")
+    page.locator("#view-movies label.switch").click()
+    page.locator(".toast", has_text="no longer censored").wait_for()
+    assert not db.is_monitored("films", "new")
+    assert desk.errors == []
+
+
 def test_selecting_several_jobs(desk):
     page = desk.go("queue")
     boxes = page.locator("#job-list .pick")

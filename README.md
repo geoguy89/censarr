@@ -30,7 +30,7 @@ uncertain the word gets muted.
 * **One click to fix a wrong call**, per show or everywhere, and every mute is
   listed with its evidence.
 * **Shows that censor themselves** as new episodes arrive, from Sonarr, Plex or
-  Jellyfin.
+  Jellyfin — and new films too, with one switch.
 
 ---
 
@@ -248,8 +248,10 @@ downloader does not. **Shows** come from whichever you pick:
 | **Plex** | address + token | Nothing else needed. Artwork comes from Plex too. |
 | **Jellyfin** | address + API key | Same again |
 
-Radarr is not used. An older setup that listed films from Radarr keeps its
-history; its films are listed from the media server from now on.
+Radarr is not asked for the library. An older setup that listed films from
+Radarr keeps its history; its films are listed from the media server from now
+on. Radarr can still say when a film lands — see
+[New films](#new-films).
 
 Everything else works the same whichever you pick, including censoring new
 episodes automatically. The Plex and Jellyfin credentials are the same ones
@@ -543,6 +545,31 @@ Checked every 10 minutes. For instant censoring, point a Sonarr **Connect →
 Webhook** (*On Import*) at `http://<host>:8477/api/webhook/sonarr`. If you
 have set a login, put the same username and password in the webhook's
 Username and Password fields.
+
+### New films
+
+A film has no show to mark, so there is one switch for all of them: **Movies →
+Censor new films automatically**. Films your media server adds from then on
+are censored as they arrive. Nothing already in the library is touched, and
+switching it off and on again starts from that moment.
+
+It is the same 10-minute check. Cens-arr remembers which films Plex or
+Jellyfin listed when the switch went on, and queues any film that appears
+after — once the media server has scanned it. It does not go by "date added",
+which is often the file's own date. A film replaced by a better copy under a
+new file name counts as new, so an upgrade is censored again.
+
+If more than 50 films appear at once — a library renamed, remounted or
+imported whole — none are queued, and the Queue page says so. Censor those
+from the Movies page.
+
+For instant censoring with Radarr, point a Radarr **Connect → Webhook** (*On
+File Import* and *On File Upgrade*) at
+`http://<host>:8477/api/webhook/radarr`, with the login as for Sonarr. Radarr
+is still not asked for the library: the webhook says a film has landed, and
+the switch says whether to censor it. The film is queued from the path Radarr
+reports when that file opens from this container (see [Paths](#paths));
+otherwise it is queued at the next check, once the media server lists it.
 
 ---
 

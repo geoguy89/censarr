@@ -25,6 +25,15 @@ IDLE_UNLOAD_SECONDS = 90
 WATCHING_RECHECK_SECONDS = 60
 MONITOR_INTERVAL_SECONDS = 600
 
+# "Censor new films" is one switch for the whole film library, kept as a row
+# beside the shows': when it was switched on, and when films were last looked
+# for.
+FILM_MONITOR = ("films", "new")
+# More new films than this in one check is not films arriving: it is a library
+# renamed, remounted or imported whole. They are left alone, and the Queue
+# page says so - the alternative is one switch quietly queueing a library.
+FILM_BURST = 50
+
 
 def _arrived_after(added: str, since: float) -> bool:
     """Did Sonarr import this file after the show was marked?
@@ -43,6 +52,18 @@ def _arrived_after(added: str, since: float) -> bool:
         return True
 
 
+def films_watched() -> bool:
+    return db.is_monitored(*FILM_MONITOR)
+
+
+def enqueue_film(title: str, year, path: str, source: str, source_id) -> int | None:
+    """Queue a film that just arrived, ahead of any back catalogue: it is the
+    one someone means to watch tonight."""
+    return db.enqueue(kind="movie", title=title or Path(path).stem,
+                      subtitle=str(year or ""), path=path, source=source,
+                      source_id=str(source_id or ""), front=True)
+
+
 class Worker:
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
@@ -55,6 +76,8 @@ class Worker:
         self.holding: str = ""     # why the queue is waiting, for the UI
         self.last_monitor_check: float = 0.0
         self.last_monitor_queued: int = 0
+        self.last_monitor_films: int = 0
+        self.films_note: str = ""      # a burst of films left alone, for the UI
         # "Clean anyway": ignore the hold until the queue runs dry, then go
         # back to normal. Deliberately not permanent - it answers "I know, do
         # it now", not "stop asking".
@@ -111,12 +134,25 @@ class Worker:
         settings = config.load()
         self.last_monitor_check = time.time()
         watched = db.monitors("sonarr")
-        if not watched:
+        films = db.monitors(FILM_MONITOR[0])
+        if not watched and not films:
             return 0
+        known = db.job_paths()
+        queued = self._check_shows(settings, watched, known) if watched else 0
+        new_films = self._check_films(settings, films[0], known) if films else 0
+        self.last_monitor_queued = queued + new_films
+        self.last_monitor_films = new_films
+        if queued:
+            print(f"[censarr] queued {queued} new episode(s) from monitored shows",
+                  flush=True)
+        if new_films:
+            print(f"[censarr] queued {new_films} new film(s)", flush=True)
+        return queued + new_films
+
+    def _check_shows(self, settings, watched, known: dict) -> int:
         # Whichever source the library comes from answers this the same way:
         # here are the show's episodes, and when each one arrived.
         source = library.build(settings)
-        known = db.job_paths()
         queued = 0
         for row in watched:
             try:
@@ -145,10 +181,62 @@ class Worker:
                 if job_id:
                     queued += 1
             db.monitor_touch("sonarr", row["source_id"])
-        self.last_monitor_queued = queued
+        return queued
+
+    # -- films that censor themselves -------------------------------------
+    def check_films(self) -> int:
+        """The film half of check_monitored on its own. Switching "Censor new
+        films" on asks for this, so the library is taken in there and then
+        without sweeping every marked show as a side effect."""
+        rows = db.monitors(FILM_MONITOR[0])
+        if not rows:
+            return 0
+        return self._check_films(config.load(), rows[0], db.job_paths())
+
+    def _check_films(self, settings, row, known: dict) -> int:
+        """Queue the films the media server lists now and did not list before.
+
+        Films come from the media server, so it is the one asked. What is new
+        is decided by the list itself, not by a date: a server's "date added"
+        is often the file's own date, and a film downloaded today can carry
+        one from years ago. So the first check after the switch goes on only
+        remembers every film there is, and each later one queues the films it
+        has not seen - which also catches a film replaced by a better copy
+        under a new name.
+
+        A film is offered once. Whatever happens to its job - cancelled
+        included - it is not queued again from here, and a film this service
+        already has a job for is not queued at all.
+        """
+        name = library.film_source(settings)
+        server = library.server(settings, name) if name else None
+        if server is None:
+            return 0
+        try:
+            films = server.movies()
+        except (arr.ArrError, library.LibraryError, ValueError):
+            return 0
+        seen = db.films_seen()
+        fresh = [film for film in films if film["path"] not in seen]
+        first = not row["last_checked"]
+        db.films_mark_seen(film["path"] for film in fresh)
+        db.monitor_touch(*FILM_MONITOR)
+        if first:
+            return 0
+        if len(fresh) > FILM_BURST:
+            self.films_note = (f"{len(fresh)} films appeared at once and were left "
+                               f"alone - censor them from Movies if you want them")
+            print(f"[censarr] {self.films_note}", flush=True)
+            return 0
+        queued = 0
+        for film in fresh:
+            if film["path"] in known:
+                continue
+            if enqueue_film(film["title"], film.get("year"), film["path"],
+                            name, film["id"]):
+                queued += 1
         if queued:
-            print(f"[censarr] queued {queued} new episode(s) from monitored shows",
-                  flush=True)
+            self.films_note = ""
         return queued
 
     def _loop(self) -> None:

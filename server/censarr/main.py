@@ -19,6 +19,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from . import env
 from . import arr, auth, config, db, judge, library, media, validate, words
+from . import worker as watching
 from .worker import Worker
 
 WEB_DIR = Path(env.get("WEB", "/app/web"))
@@ -929,7 +930,8 @@ def home(limit: int = 12):
     return {
         "library_source": library.source_name(settings),
         "episodes": episodes, "movies": films, "problems": problems,
-        "stats": db.stats(), "monitors": len(db.monitors()),
+        "stats": db.stats(), "monitors": len(db.monitors("sonarr")),
+        "films_auto": watching.films_watched(),
         "queued": counts.get("queued", 0), "running": counts.get("running", 0),
         "failed": counts.get("failed", 0),
         "busy": worker.busy, "holding": worker.holding,
@@ -990,7 +992,8 @@ def movies():
     threading.Thread(target=_warm_posters,
                      args=(source, [m["id"] for m in items]),
                      daemon=True).start()
-    return {"items": items, "library_source": library.source_name(settings)}
+    return {"items": items, "library_source": library.source_name(settings),
+            "auto": watching.films_watched()}
 
 
 #  Artwork
@@ -1146,12 +1149,18 @@ def add_monitor(payload: dict):
         raise HTTPException(400, "which show?")
     mode = "new_only" if payload.get("mode") == "new_only" else "catch_up"
     db.monitor_add(source, source_id, str(payload.get("title", "")), mode)
+    if (source, source_id) == watching.FILM_MONITOR:
+        # The films there are now are remembered straight away, so the next
+        # one to arrive is new - rather than at a sweep up to ten minutes off.
+        threading.Thread(target=_films_check, daemon=True).start()
     return {"monitored": True, "source": source, "source_id": source_id, "mode": mode}
 
 
 @app.delete("/api/monitors/{source}/{source_id}")
 def drop_monitor(source: str, source_id: str):
     db.monitor_remove(source, source_id)
+    if (source, source_id) == watching.FILM_MONITOR:
+        worker.films_note = ""
     return {"monitored": False}
 
 
@@ -1160,7 +1169,9 @@ def check_monitors():
     """Look for new episodes now rather than at the next ten-minute sweep."""
     queued = worker.check_monitored()
     worker.nudge()
-    return {"queued": queued, "checked_at": worker.last_monitor_check}
+    films = min(queued, worker.last_monitor_films)
+    return {"queued": queued, "episodes": queued - films, "films": films,
+            "checked_at": worker.last_monitor_check}
 
 
 @app.post("/api/webhook/sonarr")
@@ -1191,6 +1202,67 @@ def _webhook_check() -> None:
         worker.nudge()
     except Exception as exc:  # noqa: BLE001
         print(f"[censarr] webhook check failed: {exc}", flush=True)
+
+
+def _films_check() -> None:
+    try:
+        if worker.check_films():
+            worker.nudge()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[censarr] film check failed: {exc}", flush=True)
+
+
+def _radarr_file(payload: dict) -> str:
+    """Where Radarr says the imported film is, as Radarr sees it."""
+    movie = payload.get("movie") if isinstance(payload.get("movie"), dict) else {}
+    file = payload.get("movieFile") if isinstance(payload.get("movieFile"), dict) else {}
+    path = str(file.get("path") or "")
+    if not path and movie.get("folderPath") and file.get("relativePath"):
+        path = f"{str(movie['folderPath']).rstrip('/')}/{file['relativePath']}"
+    return path
+
+
+@app.post("/api/webhook/radarr")
+async def radarr_webhook(request: Request):
+    """Optional: Radarr tells us the moment a film is imported.
+
+    Radarr is not asked for the library - films are listed by the media server
+    - but it knows a film has landed before the media server has scanned it.
+    Point a Radarr "Connect -> Webhook" at this URL with On File Import (and
+    On File Upgrade, so a replaced file is censored again).
+
+    It only acts while "Censor new films" is switched on, as Sonarr's webhook
+    only acts for shows that are marked: the webhook says when, the switch
+    says whether. The film is queued from the path Radarr gives when that file
+    opens from here; otherwise the media server is asked, now and at each
+    sweep, and the film is queued once it lists it. Queued here, it is not
+    queued a second time when the media server lists it: it has a job.
+    """
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    event = str(payload.get("eventType", ""))
+    if event in ("Test", "test"):
+        return {"ok": True, "message": "Cens-arr heard you"}
+    if not watching.films_watched():
+        return {"ok": True, "event": event, "queued": 0,
+                "message": "Censor new films is switched off"}
+    queued = 0
+    path = _radarr_file(payload) if event == "Download" else ""
+    if path and Path(path).is_file():
+        movie = payload.get("movie") or {}
+        if watching.enqueue_film(str(movie.get("title") or ""), movie.get("year"),
+                                 path, "radarr", movie.get("id")):
+            queued = 1
+            worker.nudge()
+    elif path:
+        print(f"[censarr] Radarr imported {path}, which does not open from here - "
+              f"waiting for the media server to list it", flush=True)
+    threading.Thread(target=_webhook_check, daemon=True).start()
+    return {"ok": True, "event": event, "queued": queued}
 
 
 # ---------------------------------------------------------------------------
@@ -1500,7 +1572,9 @@ def list_jobs(limit: int = 100, include_finished: bool = False):
             "override": worker.override, "stats": db.stats(),
             "cancelled": counts.get("cancelled", 0),
             "failed": counts.get("failed", 0),
-            "monitors": len(db.monitors()),
+            "monitors": len(db.monitors("sonarr")),
+            "films_auto": watching.films_watched(),
+            "films_note": worker.films_note,
             "last_check": worker.last_monitor_check}
 
 
