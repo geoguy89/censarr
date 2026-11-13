@@ -182,6 +182,7 @@
             <option value="all">All movies</option>
             <option value="cleaned">Censored</option>
             <option value="untouched">Not censored yet</option>
+            <option value="wanted">Not downloaded yet (Radarr)</option>
           </select></label>
         <label class="select-inline"><span class="sr-only">Sort</span>
           <select id="movie-sort">
@@ -310,9 +311,10 @@
             <section class="panel" id="s-library" aria-labelledby="s-library-h">
               <header class="panel-head">
                 <h2 id="s-library-h"><span class="step">1</span>Your library</h2>
-                <p class="muted">Where the list of shows comes from. Films always
-                  come from your media server (Media server, below). Read-only: Cens-arr never
-                  changes anything in either.</p>
+                <p class="muted">Where the list of shows comes from. Films on disk
+                  come from your media server (Media server, below); Radarr, if you
+                  add it, lists the films not downloaded yet. Read-only: Cens-arr
+                  never changes anything in any of them.</p>
               </header>
               <fieldset class="choices">
                 <legend class="sr-only">Library source</legend>
@@ -352,6 +354,23 @@
               <!-- Filled with the Plex or Jellyfin fields when one of them is
                    the library; the same fields serve the Media server section. -->
               <div id="lib-server" hidden></div>
+
+              <div class="service" id="lib-radarr">
+                <h3>Radarr <span class="muted small">optional · films not downloaded yet</span></h3>
+                <p class="muted small">Lets you mark a film Radarr is still waiting for,
+                  under <strong>Movies → Not downloaded yet</strong>, so it is censored
+                  the moment it downloads.</p>
+                <div class="fields two">
+                  <div class="field"><label for="f-radarr-url">Address</label>
+                    <input id="f-radarr-url" name="radarr.url" inputmode="url" autocomplete="off" placeholder="http://radarr:7878">
+                    <p class="error-text" data-error-for="radarr.url"></p></div>
+                  <div class="field"><label for="f-radarr-key">API key</label>
+                    <input id="f-radarr-key" name="radarr.api_key" type="password" autocomplete="off">
+                    <p class="hint">Radarr → Settings → General.</p></div>
+                </div>
+                <div class="test-row"><button type="button" class="btn secondary sm" data-test="radarr">Test Radarr</button>
+                  <span class="test-result" data-result="radarr" role="status"></span></div>
+              </div>
 
               <div class="paths">
                 <h3>Can Cens-arr open the files?</h3>
@@ -739,6 +758,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

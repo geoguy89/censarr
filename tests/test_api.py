@@ -56,14 +56,27 @@ def test_old_config_keys_are_migrated(home):
     assert not hasattr(s, "path_map")
 
 
-def test_a_config_from_before_radarr_was_dropped(home):
+def test_a_config_from_when_radarr_listed_the_films(home):
+    # Shows from Sonarr; the Radarr address is kept, for films not downloaded yet.
     config.CONFIG_FILE.write_text(
-        "library_source: arr\nradarr: {url: http://r, api_key: k}\n"
+        "library_source: arr\nradarr: {url: http://r, api_key: k, extra: 1}\n"
         "sonarr: {url: http://s, api_key: k}\n", encoding="utf8")
     s = config.load()
-    assert s.library_source == "sonarr" and not hasattr(s, "radarr")
-    config.save(s)
-    assert "radarr" not in config.CONFIG_FILE.read_text(encoding="utf8")
+    assert s.library_source == "sonarr"
+    assert (s.radarr.url, s.radarr.api_key) == ("http://r", "k")
+
+
+def test_radarr_settings_are_saved_masked_and_tested(client, settings, stub):
+    stub.route("GET", "/api/v3/system/status", {"appName": "Radarr", "version": "5.9"})
+    r = client.put("/api/settings", json={"radarr": {"url": "ftp://nope", "api_key": "k"}})
+    assert r.status_code == 400 and "radarr.url" in r.json()["errors"]
+    saved = client.put("/api/settings", json={"radarr": {"url": f"{stub.url}/", "api_key": "rk"}}).json()
+    assert saved["radarr"] == {"url": stub.url, "api_key": "********", "enabled": False}
+    client.put("/api/settings", json={"radarr": {"url": stub.url, "api_key": "********"}})
+    assert config.load().radarr.api_key == "rk"                     # a masked key keeps the saved one
+    said = client.post("/api/settings/test/radarr", json={"url": stub.url, "api_key": "********"}).json()
+    assert said == {"ok": True, "app": "Radarr", "version": "5.9"}
+    assert stub.seen("/api/v3/system/status")[0].headers["x-api-key"] == "rk"
 
 
 def test_categories_and_policies_are_offered(client, settings):
@@ -319,6 +332,21 @@ def test_radarr_webhook_queues_the_film_it_names(client, settings, tmp_path, mon
     assert settled(swept, 3)
 
 
+def test_radarr_webhook_queues_a_marked_film_with_the_switch_off(client, settings, tmp_path,
+                                                                   monkeypatch):
+    monkeypatch.setattr(main, "_webhook_check", lambda: None)
+    film = tmp_path / "Film (2021)" / "Film (2021).mkv"
+    film.parent.mkdir()
+    film.write_bytes(b"x")
+    db.monitor_add("radarr", "12", "Film", "new_only")         # marked before it downloaded
+    assert client.post("/api/webhook/radarr", json=radarr_import(film)).json()["queued"] == 1
+    assert db.next_queued()["path"] == str(film)
+    assert not db.is_monitored("radarr", "12")                 # the mark has done its job
+    other = radarr_import(tmp_path / "Other.mkv")
+    other["movie"]["id"] = 13
+    assert "switched off" in client.post("/api/webhook/radarr", json=other).json()["message"]
+
+
 def test_radarr_webhook_leaves_other_news_and_other_mounts_to_the_sweep(
         client, settings, tmp_path, monkeypatch):
     swept = []
@@ -539,6 +567,27 @@ def test_the_film_switch_is_reported_and_is_not_a_show(client, arr_library, monk
     assert client.delete("/api/monitors/films/new").json() == {"monitored": False}
     assert client.get("/api/movies").json()["auto"] is False
     assert db.films_seen() == set() and main.worker.films_note == ""
+
+
+def test_films_not_downloaded_yet_come_from_radarr(client, settings, stub):
+    assert client.get("/api/radarr/wanted").json()["unavailable"] is True
+    stub.route("GET", "/api/v3/movie", [
+        {"id": 1, "title": "On Disk", "hasFile": True},
+        {"id": 2, "title": "Coming", "year": 2027, "hasFile": False, "monitored": True,
+         "status": "announced"},
+        {"id": 3, "title": "Out Now", "year": 2026, "hasFile": False, "monitored": False,
+         "status": "released", "inCinemas": "2026-01-02T00:00:00Z",
+         "digitalRelease": "2026-03-04T00:00:00Z", "isAvailable": True}])
+    settings.radarr = config.ArrConfig(url=stub.url, api_key="rk")
+    config.save(settings)
+    db.monitor_add("radarr", "2", "Coming", "new_only")
+    items = client.get("/api/radarr/wanted").json()["items"]
+    assert [(m["id"], m["marked"], m["wanted"]) for m in items] == [(3, False, False), (2, True, True)]
+    assert (items[0]["released"], items[0]["release_kind"]) == ("2026-03-04", "digital")
+    assert client.get("/api/jobs").json()["films_waiting"] == 1
+    stub.route("GET", "/api/v3/movie", lambda req: (401, {}))
+    main.forget_listings()
+    assert "rejected the API key" in client.get("/api/radarr/wanted").json()["detail"]
 
 
 def test_home(client, arr_library):

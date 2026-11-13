@@ -603,7 +603,7 @@ def put_settings(payload: dict):
         return _refuse(errors)
     settings = config.load()
     old_title = settings.track_title
-    for section in ("sonarr",):
+    for section in ("sonarr", "radarr"):
         if section in payload and isinstance(payload[section], dict):
             current = getattr(settings, section)
             for key, value in payload[section].items():
@@ -672,6 +672,7 @@ def test_service(service: str, payload: dict | None = None):
     payload = payload or {}
     saved = {
         "sonarr": (settings.sonarr.url, settings.sonarr.api_key),
+        "radarr": (settings.radarr.url, settings.radarr.api_key),
         "plex": (settings.plex_url, settings.plex_token),
         "jellyfin": (settings.jellyfin_url, settings.jellyfin_api_key),
     }
@@ -687,6 +688,8 @@ def test_service(service: str, payload: dict | None = None):
     try:
         if service == "sonarr":
             return arr.Sonarr(address, key).test()
+        if service == "radarr":
+            return arr.Radarr(address, key).test()
         if service == "plex":
             return library.PlexLibrary(address, key).test()
         return library.JellyfinLibrary(address, key).test()
@@ -754,7 +757,8 @@ _LISTS_REFRESHING: set[tuple] = set()
 
 def _library_key(settings) -> tuple:
     return (library.source_name(settings), library.film_source(settings),
-            settings.sonarr.url, settings.sonarr.api_key, settings.plex_url,
+            settings.sonarr.url, settings.sonarr.api_key, settings.radarr.url,
+            settings.radarr.api_key, settings.plex_url,
             settings.plex_token, settings.jellyfin_url, settings.jellyfin_api_key)
 
 
@@ -1090,12 +1094,13 @@ def _fetch_poster_now(source: str, item_id: int | str, settings, cached: Path) -
         _save_poster(cached, data)
         return True
 
-    arr_config = settings.sonarr
-    if source != "sonarr" or not arr_config.url:
+    arr_config = {"sonarr": settings.sonarr, "radarr": settings.radarr}.get(source)
+    if arr_config is None or not arr_config.url:
         return False
-    # Sonarr serves artwork at /api/v3/mediacover/<id>/poster.jpg - with no
-    # "series" segment, which 404s - and keeps a 500px copy beside it as
-    # poster-500.jpg, which is the one to use; the original is the fallback.
+    # Sonarr and Radarr serve artwork at /api/v3/mediacover/<id>/poster.jpg -
+    # with no "series" or "movie" segment, which 404s - and keep a 500px copy
+    # beside it as poster-500.jpg, which is the one to use; the original is
+    # the fallback.
     base = f"{arr_config.url.rstrip('/')}/api/v3/mediacover/{item_id}"
     for name in ("poster-500.jpg", "poster.jpg"):
         try:
@@ -1134,6 +1139,26 @@ def poster(source: str, id: str):
     # a URL never changes: the browser can keep it without asking again.
     return FileResponse(str(_poster_path(source, id)), media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=2592000, immutable"})
+
+
+@app.get("/api/radarr/wanted")
+def radarr_wanted():
+    """The films Radarr has no file for yet, each saying whether it is marked
+    to be censored when it arrives."""
+    settings = config.load()
+    if not (settings.radarr.url and settings.radarr.api_key):
+        return {"items": [], "unavailable": True,
+                "reason": "Add Radarr under Settings → Your library to see these"}
+    try:
+        items = _listing(settings, "radarr_wanted",
+                         arr.Radarr(settings.radarr.url, settings.radarr.api_key).wanted)
+    except arr.ArrError as exc:
+        raise HTTPException(502, str(exc))
+    marked = {r["source_id"] for r in db.monitors("radarr")}
+    for movie in items:
+        movie["marked"] = str(movie["id"]) in marked
+        movie["source"] = "radarr"
+    return {"items": items}
 
 
 @app.get("/api/monitors")
@@ -1231,9 +1256,10 @@ async def radarr_webhook(request: Request):
     Point a Radarr "Connect -> Webhook" at this URL with On File Import (and
     On File Upgrade, so a replaced file is censored again).
 
-    It only acts while "Censor new films" is switched on, as Sonarr's webhook
-    only acts for shows that are marked: the webhook says when, the switch
-    says whether. The film is queued from the path Radarr gives when that file
+    It acts for a film marked to be censored when it arrives, and for every
+    film while "Censor new films" is switched on, as Sonarr's webhook only
+    acts for shows that are marked: the webhook says when, the mark or the
+    switch says whether. The film is queued from the path Radarr gives when that file
     opens from here; otherwise the media server is asked, now and at each
     sweep, and the film is queued once it lists it. Queued here, it is not
     queued a second time when the media server lists it: it has a job.
@@ -1247,17 +1273,21 @@ async def radarr_webhook(request: Request):
     event = str(payload.get("eventType", ""))
     if event in ("Test", "test"):
         return {"ok": True, "message": "Cens-arr heard you"}
-    if not watching.films_watched():
+    movie = payload.get("movie") if isinstance(payload.get("movie"), dict) else {}
+    marked = bool(movie.get("id")) and db.is_monitored("radarr", str(movie["id"]))
+    if not watching.films_watched() and not marked:
         return {"ok": True, "event": event, "queued": 0,
                 "message": "Censor new films is switched off"}
     queued = 0
     path = _radarr_file(payload) if event == "Download" else ""
     if path and Path(path).is_file():
-        movie = payload.get("movie") or {}
         if watching.enqueue_film(str(movie.get("title") or ""), movie.get("year"),
                                  path, "radarr", movie.get("id")):
             queued = 1
             worker.nudge()
+        db.films_mark_seen([path])
+        if marked:
+            db.monitor_remove("radarr", str(movie["id"]))
     elif path:
         print(f"[censarr] Radarr imported {path}, which does not open from here - "
               f"waiting for the media server to list it", flush=True)
@@ -1574,6 +1604,7 @@ def list_jobs(limit: int = 100, include_finished: bool = False):
             "failed": counts.get("failed", 0),
             "monitors": len(db.monitors("sonarr")),
             "films_auto": watching.films_watched(),
+            "films_waiting": len(db.monitors("radarr")),
             "films_note": worker.films_note,
             "last_check": worker.last_monitor_check}
 

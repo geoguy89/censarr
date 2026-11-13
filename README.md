@@ -228,7 +228,7 @@ numbered in the order things need doing:
 
 1. **Your library** — where shows come from: Sonarr, Plex or Jellyfin, with a
    test button, and a check that each library folder opens from inside the
-   container.
+   container. Radarr, optional, for films not downloaded yet.
 2. **What gets silenced** — four switchable lists, plus your own always/never
    words.
 3. **Listening** — download the speech model here rather than during your first
@@ -262,10 +262,9 @@ downloader does not. **Shows** come from whichever you pick:
 | **Plex** | address + token | Nothing else needed. Artwork comes from Plex too. |
 | **Jellyfin** | address + API key | Same again |
 
-Radarr is not asked for the library. An older setup that listed films from
-Radarr keeps its history; its films are listed from the media server from now
-on. Radarr can still say when a film lands — see
-[New films](#new-films).
+**Radarr is optional**, and never lists the films you have: it is asked only
+about the films it has no file for yet, so one can be marked to be censored
+when it downloads — see [Films not downloaded yet](#films-not-downloaded-yet).
 
 Everything else works the same whichever you pick, including censoring new
 episodes automatically. The Plex and Jellyfin credentials are the same ones
@@ -588,13 +587,27 @@ If more than 50 films appear at once — a library renamed, remounted or
 imported whole — none are queued, and the Queue page says so. Censor those
 from the Movies page.
 
-For instant censoring with Radarr, point a Radarr **Connect → Webhook** (*On
-File Import* and *On File Upgrade*) at
-`http://<host>:8477/api/webhook/radarr`, with the login as for Sonarr. Radarr
-is still not asked for the library: the webhook says a film has landed, and
-the switch says whether to censor it. The film is queued from the path Radarr
-reports when that file opens from this container (see [Paths](#paths));
-otherwise it is queued at the next check, once the media server lists it.
+### Films not downloaded yet
+
+With Radarr added (Settings → Your library), **Movies → Not downloaded yet
+(Radarr)** lists every film Radarr has no file for, with when it comes out.
+Switch on **Censor when it downloads** for one, and it is queued the moment
+its file arrives, ahead of anything else waiting. It works whether or not
+*Censor new films automatically* is on.
+
+The same 10-minute check asks Radarr about each marked film. When Radarr has
+the file, the film is queued from the path Radarr reports if that opens from
+this container (see [Paths](#paths)); otherwise from your media server once it
+lists the same file. After that the mark goes: an upgrade later is not
+censored again unless *Censor new films automatically* is on.
+
+### Censoring the moment a film lands
+
+Point a Radarr **Connect → Webhook** (*On File Import* and *On File Upgrade*)
+at `http://<host>:8477/api/webhook/radarr`, with the login as for Sonarr. The
+webhook says a film has landed; a mark on that film, or *Censor new films
+automatically*, says whether to censor it. Without the webhook, both still
+work at the next check.
 
 ---
 

@@ -135,11 +135,13 @@ class Worker:
         self.last_monitor_check = time.time()
         watched = db.monitors("sonarr")
         films = db.monitors(FILM_MONITOR[0])
-        if not watched and not films:
+        waiting = db.monitors("radarr")
+        if not watched and not films and not waiting:
             return 0
         known = db.job_paths()
         queued = self._check_shows(settings, watched, known) if watched else 0
         new_films = self._check_films(settings, films[0], known) if films else 0
+        new_films += self._check_waiting(settings, waiting, known) if waiting else 0
         self.last_monitor_queued = queued + new_films
         self.last_monitor_films = new_films
         if queued:
@@ -181,6 +183,51 @@ class Worker:
                 if job_id:
                     queued += 1
             db.monitor_touch("sonarr", row["source_id"])
+        return queued
+
+    # -- films marked before they downloaded ------------------------------
+    def _check_waiting(self, settings, rows, known: dict) -> int:
+        """Queue each film marked in Radarr that has a file now.
+
+        Radarr says where the file is, as Radarr sees it. That path is used
+        when it opens here; otherwise the media server is asked for the same
+        file (same name, same folder), and until it lists it the film waits
+        for the next check. Once queued - or already censored - the mark has
+        done its job and goes.
+        """
+        radarr = arr.Radarr(settings.radarr.url, settings.radarr.api_key)
+        name = library.film_source(settings)
+        server = library.server(settings, name) if name else None
+        server_films: list[dict] | None = None
+        queued = 0
+        for row in rows:
+            try:
+                movie = radarr.movie(row["source_id"])
+            except arr.ArrError:
+                continue
+            if not movie["has_file"]:
+                continue
+            path, source, source_id = movie["path"], "radarr", str(movie["id"])
+            if not Path(path).is_file():
+                if server is None:
+                    continue
+                if server_films is None:
+                    try:
+                        server_films = server.movies()
+                    except (arr.ArrError, library.LibraryError, ValueError):
+                        server_films = []
+                match = next((f for f in server_films
+                              if library.same_file(f["path"], path)), None)
+                if match is None:
+                    continue
+                path, source, source_id = match["path"], name, match["id"]
+            if known.get(path) is None and enqueue_film(
+                    movie["title"] or row["title"], movie["year"], path, source, source_id):
+                queued += 1
+            # A film is also seen by "Censor new films" when that is on: it
+            # has a job now, so it is not offered twice.
+            db.films_mark_seen([path])
+            db.monitor_remove("radarr", row["source_id"])
         return queued
 
     # -- films that censor themselves -------------------------------------

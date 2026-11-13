@@ -240,6 +240,50 @@ class Sonarr(Client):
         return out
 
 
+class Radarr(Client):
+    """Asked only about films that are not downloaded yet. Films on disk come
+    from the media server, which knows every version and its subtitles."""
+
+    @staticmethod
+    def _release(m: dict) -> tuple[str, str]:
+        """The release worth knowing about: the next one to come, else the
+        latest that has been. (date, what kind)."""
+        today = _dt.date.today().isoformat()
+        dates = sorted((str(m[k])[:10], label) for k, label in (
+            ("inCinemas", "in cinemas"), ("digitalRelease", "digital"),
+            ("physicalRelease", "on disc")) if m.get(k))
+        coming = [d for d in dates if d[0] >= today]
+        return coming[0] if coming else (dates[-1] if dates else ("", ""))
+
+    def wanted(self) -> list[dict]:
+        """Every film Radarr has with no file yet, soonest release first."""
+        out = []
+        for m in self._get("movie") or []:
+            if m.get("hasFile"):
+                continue
+            released, kind = self._release(m)
+            out.append({
+                "id": m.get("id"), "title": m.get("title", ""), "year": m.get("year"),
+                "status": m.get("status", ""),       # announced | inCinemas | released
+                "wanted": bool(m.get("monitored")),  # Radarr is looking for it
+                "available": bool(m.get("isAvailable")),
+                "released": released, "release_kind": kind,
+                "added": m.get("added", ""),
+            })
+        out.sort(key=lambda m: (m["released"] or "9999", (m["title"] or "").lower()))
+        return out
+
+    def movie(self, movie_id) -> dict:
+        """Whether one film has a file now, and where Radarr says it is."""
+        m = self._get(f"movie/{movie_id}") or {}
+        file = m.get("movieFile") or {}
+        path = file.get("path") or ""
+        if not path and m.get("path") and file.get("relativePath"):
+            path = f"{str(m['path']).rstrip('/')}/{file['relativePath']}"
+        return {"id": m.get("id"), "title": m.get("title", ""), "year": m.get("year"),
+                "has_file": bool(m.get("hasFile")) and bool(path), "path": path}
+
+
 def _poster(item: dict) -> str:
     for image in item.get("images") or []:
         if image.get("coverType") == "poster":

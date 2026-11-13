@@ -46,6 +46,10 @@ class Settings:
     library_source: str = "sonarr"
 
     sonarr: ArrConfig = field(default_factory=ArrConfig)
+    # Optional, and never the film library: films on disk come from the media
+    # server. Radarr is asked only what it is still waiting for, so a film can
+    # be marked to censor itself the moment it downloads.
+    radarr: ArrConfig = field(default_factory=ArrConfig)
 
     # Which categories are silenced. Set from the first-run questions.
     categories: list[str] = field(
@@ -166,6 +170,8 @@ class Settings:
         data = self.to_dict()
         if data["sonarr"].get("api_key"):
             data["sonarr"]["api_key"] = "********"
+        if data["radarr"].get("api_key"):
+            data["radarr"]["api_key"] = "********"
         if data.get("plex_token"):
             data["plex_token"] = "********"
         if data.get("asr_api_key"):
@@ -204,11 +210,10 @@ def load() -> Settings:
     # switching it off.
     if "media_server" not in raw and raw.get("plex_url"):
         raw["media_server"] = "plex"
-    # Radarr was dropped: films come from the media server. "arr" meant Sonarr
-    # and Radarr, so it becomes Sonarr, and the Radarr section is forgotten on
-    # the next save. With no media server chosen, films will not show, and the
-    # setup checklist says so.
-    raw.pop("radarr", None)
+    # "arr" meant shows from Sonarr and films from Radarr. Films now always
+    # come from the media server, so it becomes Sonarr; an old Radarr address
+    # is kept, since it is used again for films not downloaded yet. With no
+    # media server chosen, films will not show, and the setup checklist says so.
     if raw.get("library_source") == "arr":
         raw["library_source"] = "sonarr"
     # The default track name changed with the rename. A config that saved the
@@ -220,8 +225,9 @@ def load() -> Settings:
         if "Cleaned - English" not in known:
             raw["known_track_titles"] = [*known, "Cleaned - English"]
     for key, value in raw.items():
-        if key == "sonarr" and isinstance(value, dict):
-            setattr(settings, key, ArrConfig(**value))
+        if key in ("sonarr", "radarr") and isinstance(value, dict):
+            known = {k: v for k, v in value.items() if k in ("url", "api_key", "enabled")}
+            setattr(settings, key, ArrConfig(**known))
         elif hasattr(settings, key):
             setattr(settings, key, value)
     return settings

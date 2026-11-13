@@ -806,7 +806,96 @@ const loadMovies = once('movies', async () => {
 });
 ACTIONS['reload-movies'] = loadMovies;
 
+/* Films Radarr has no file for yet. Fetched only when asked for. */
+const loadWanted = once('wanted', async () => {
+  $('#movie-grid').innerHTML = loading('Asking Radarr…', skeletonRows(5));
+  try {
+    const data = await api('/api/radarr/wanted');
+    state.wanted = data;
+  } catch (err) {
+    if (err.status === 401) return;
+    state.wanted = null;
+    $('#movie-grid').innerHTML = problem('Could not ask Radarr', err.message, 'reload-wanted');
+    return;
+  }
+  if ($('#movie-filter').value === 'wanted') renderMovies();
+});
+ACTIONS['reload-wanted'] = () => { state.wanted = null; loadWanted(); };
+
+const releaseLine = (m) => {
+  if (!m.released) return m.status === 'announced' ? 'Announced, no release date yet' : '';
+  const soon = m.released >= new Date().toISOString().slice(0, 10);
+  const day = new Date(`${m.released}T00:00:00`).toLocaleDateString(undefined,
+    { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${soon ? 'Out' : 'Came out'} ${m.release_kind} ${day}`;
+};
+
+function renderWanted() {
+  const data = state.wanted;
+  if (!data) { loadWanted(); return; }
+  if (data.unavailable) {
+    $('#movie-count').textContent = '';
+    $('#movie-grid').innerHTML = empty({ icon: 'film', title: 'Radarr is not set up',
+      text: 'Add Radarr to mark films that have not downloaded yet, so they are censored as they arrive.',
+      actions: '<a class="btn secondary sm" href="#/settings/library">Add Radarr</a>' });
+    return;
+  }
+  const needle = $('#movie-search').value.trim().toLowerCase();
+  const items = data.items.filter((m) => !needle || (m.title || '').toLowerCase().includes(needle));
+  if ($('#movie-sort').value === 'title') items.sort(byTitle);
+  else items.sort((a, b) => String(b.added || '').localeCompare(String(a.added || '')));
+  const marked = data.items.filter((m) => m.marked).length;
+  $('#movie-count').textContent = `${plural(items.length, 'film')} not downloaded yet${
+    marked ? ` · ${marked} to censor` : ''}`;
+  if (!data.items.length) {
+    $('#movie-grid').innerHTML = empty({ icon: 'check', title: 'Nothing waiting',
+      text: 'Radarr has a file for every film it knows about.' });
+    return;
+  }
+  $('#movie-grid').innerHTML = items.length ? `<div class="rows">${items.map((m) => `
+    <div class="row">
+      <img class="thumb" loading="lazy" decoding="async" alt="" src="${posterUrl(m, 'movie')}" onerror="this.classList.add('none')">
+      <div class="grow">
+        <div class="title">${esc(m.title)} ${m.year ? `<span class="muted">${esc(m.year)}</span>` : ''}</div>
+        <div class="sub">${esc([releaseLine(m), m.wanted ? '' : 'Radarr is not looking for it'].filter(Boolean).join(' · '))}</div>
+      </div>
+      <div class="actions">
+        <label class="switch"><input type="checkbox" role="switch" data-change="want-film" data-id="${esc(m.id)}"
+          data-title="${esc(m.title)}" ${m.marked ? 'checked' : ''}>
+          <span class="track" aria-hidden="true"></span><span>Censor when it downloads<span class="sr-only">: ${esc(m.title)}</span></span></label>
+      </div>
+    </div>`).join('')}</div>`
+    : empty({ icon: 'search', title: 'Nothing matches',
+      actions: '<button type="button" class="btn secondary sm" data-action="clear-movie-filters">Clear the search</button>' });
+}
+
+/* Mark one film Radarr is waiting for: it is queued when its file arrives. */
+ACTIONS['want-film'] = async (box) => {
+  const { id, title } = box.dataset;
+  const on = box.checked;
+  box.disabled = true;
+  try {
+    if (on) {
+      await api('/api/monitors', { method: 'POST',
+        body: { source: 'radarr', source_id: String(id), title, mode: 'new_only' } });
+      toast(`${title} will be censored when it downloads`);
+    } else {
+      await api(`/api/monitors/radarr/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      toast(`${title} will not be censored automatically`);
+    }
+  } catch (err) {
+    box.checked = !on;
+    throw err;
+  } finally {
+    box.disabled = false;
+  }
+  const film = (state.wanted?.items || []).find((m) => String(m.id) === String(id));
+  if (film) film.marked = on;
+  if ($('#movie-filter').value === 'wanted') renderMovies();
+};
+
 function renderMovies() {
+  if ($('#movie-filter').value === 'wanted') { renderWanted(); return; }
   if (!state.movies) return;
   const needle = $('#movie-search').value.trim().toLowerCase();
   const filter = $('#movie-filter').value;
@@ -1416,7 +1505,9 @@ function renderQueue() {
   const watching = [
     data.monitors ? `${plural(data.monitors, 'show')} censoring new episodes` : '',
     data.films_auto ? 'new films censored as they arrive' : '',
-  ].filter(Boolean).join(', and ');
+    data.films_waiting ? `${plural(data.films_waiting, 'film')} to censor when ${
+      data.films_waiting === 1 ? 'it downloads' : 'they download'}` : '',
+  ].filter(Boolean).join(', ');
   $('#monitor-status').textContent = watching
     ? `${watching[0].toUpperCase()}${watching.slice(1)}. Checked every 10 minutes${
       ago === null ? '' : `, last ${ago === 0 ? 'just now' : `${ago} min ago`}`}.${
@@ -1736,6 +1827,7 @@ function collect() {
   return {
     library_source: radio('library_source') || 'sonarr',
     sonarr: { url: F('sonarr.url').value.trim(), api_key: F('sonarr.api_key').value.trim(), enabled: true },
+    radarr: { url: F('radarr.url').value.trim(), api_key: F('radarr.api_key').value.trim(), enabled: true },
     plex_url: F('plex_url').value.trim(), plex_token: F('plex_token').value.trim(),
     jellyfin_url: F('jellyfin_url').value.trim(), jellyfin_api_key: F('jellyfin_api_key').value.trim(),
     categories: $$('#categories input:checked').map((i) => i.value),
@@ -1819,6 +1911,7 @@ function fillSettings(s) {
   check('asr_backend', s.asr_backend || 'builtin');
   check('media_server', s.media_server || 'none');
   set('sonarr.url', s.sonarr.url); set('sonarr.api_key', s.sonarr.api_key);
+  set('radarr.url', s.radarr?.url); set('radarr.api_key', s.radarr?.api_key);
   set('plex_url', s.plex_url); set('plex_token', s.plex_token);
   set('jellyfin_url', s.jellyfin_url); set('jellyfin_api_key', s.jellyfin_api_key);
   set('asr_url', s.asr_url); set('asr_api_key', s.asr_api_key); set('asr_remote_model', s.asr_remote_model);
@@ -1999,7 +2092,7 @@ async function saveSettings() {
   form._filled = false;
   const fresh = await loadSettings({ force: true });
   if (fresh.library_source !== before) {
-    state.shows = null; state.movies = null; state.home = null; state.calendar = null;
+    state.shows = null; state.movies = null; state.home = null; state.calendar = null; state.wanted = null;
   }
   return true;
 }
@@ -2038,6 +2131,7 @@ $$('[data-test]').forEach((btn) => btn.addEventListener('click', async () => {
   const out = $(`[data-result="${service}"]`);
   const fields = {
     sonarr: ['sonarr.url', 'sonarr.api_key'],
+    radarr: ['radarr.url', 'radarr.api_key'],
     plex: ['plex_url', 'plex_token'], jellyfin: ['jellyfin_url', 'jellyfin_api_key'],
   }[service];
   out.className = 'test-result';

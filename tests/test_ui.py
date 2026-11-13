@@ -190,6 +190,31 @@ def test_the_film_switch_turns_on_and_stays_on(desk):
     assert desk.errors == []
 
 
+def test_a_film_not_downloaded_yet_can_be_marked(desk):
+    page = desk.go("movies")
+    page.select_option("#movie-filter", "wanted")
+    row = page.locator("#movie-grid .row", has_text="Paper Lanterns")
+    row.wait_for()
+    assert "Out digital" in row.inner_text()
+    assert "2 films not downloaded yet" in page.locator("#movie-count").inner_text()
+    assert page.locator("#movie-grid .row", has_text="Blue Hour").count() == 0   # on disk
+    row.locator("label.switch").click()
+    page.locator(".toast", has_text="will be censored when it downloads").wait_for()
+    assert db.is_monitored("radarr", "902")
+    assert "1 to censor" in page.locator("#movie-count").inner_text()
+    queue = desk.go("queue")
+    # Read at the queue's next refresh, a few seconds at most.
+    queue.locator("#monitor-status", has_text="1 film to censor when it downloads").wait_for()
+    page = desk.go("movies")
+    page.select_option("#movie-filter", "wanted")
+    row = page.locator("#movie-grid .row", has_text="Paper Lanterns")
+    assert row.get_by_role("switch").is_checked()
+    row.locator("label.switch").click()
+    page.locator(".toast", has_text="will not be censored").wait_for()
+    assert not db.is_monitored("radarr", "902")
+    assert desk.errors == []
+
+
 def test_selecting_several_jobs(desk):
     page = desk.go("queue")
     boxes = page.locator("#job-list .pick")
@@ -212,7 +237,7 @@ def test_every_setting_saves_and_comes_back(desk, demo, tmp_path):
     # Library: the Sonarr address, then switch to Jellyfin, which hides it
     # and moves the Jellyfin fields into this section.
     page.fill("[name='sonarr.url']", "http://sonarr.test:8989")
-    assert page.locator("[name='radarr.url']").count() == 0
+    page.fill("[name='radarr.url']", "http://radarr.test:7878")
     page.locator("input[name=library_source][value=jellyfin]").check()
     assert page.locator("[name='sonarr.url']").is_hidden()
     page.fill("[name=jellyfin_url]", "http://jellyfin.test:8096")
@@ -272,6 +297,7 @@ def test_every_setting_saves_and_comes_back(desk, demo, tmp_path):
     assert s.library_source == "jellyfin"
     assert (s.jellyfin_url, s.jellyfin_api_key) == ("http://jellyfin.test:8096", "jf-key")
     assert s.sonarr.url == "http://sonarr.test:8989" and s.sonarr.api_key == "demo-sonarr-key"
+    assert s.radarr.url == "http://radarr.test:7878" and s.radarr.api_key == "demo-radarr-key"
     assert "mild" not in s.categories and "strong" in s.categories
     assert s.custom_words == ["muppet"] and s.allow_words == ["dickens"]
     assert s.check_in_context == ["cock", "christ", "prick"]

@@ -14,11 +14,11 @@
  * because it looks correct.
  */
 
-const VERSION = 'censarr-v10';
+const VERSION = 'censarr-v11';
 const SHELL = [
   '/',
   '/static/style.css?v=6',
-  '/static/app.js?v=8',
+  '/static/app.js?v=9',
   '/static/logo.svg?v=5',
   '/static/icon.png?v=5',
   '/static/manifest.json',

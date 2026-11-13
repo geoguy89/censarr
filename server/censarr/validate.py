@@ -24,6 +24,7 @@ CHOICES = {
 
 URLS = {
     "sonarr.url": "Sonarr address",
+    "radarr.url": "Radarr address",
     "plex_url": "Plex address",
     "jellyfin_url": "Jellyfin address",
     "asr_url": "Whisper server address",

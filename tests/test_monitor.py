@@ -300,3 +300,68 @@ def test_an_unreachable_media_server_is_tried_again(plex_films, home, settings):
 def test_no_media_server_means_no_films(home, settings):
     db.monitor_add(*worker.FILM_MONITOR, "New films", "new_only")
     assert worker.Worker(home).check_monitored() == 0
+
+
+# ---------------------------------------------------------------- films marked in Radarr
+
+@pytest.fixture
+def radarr(stub, settings):
+    """A Radarr whose one film can be given a file during a test."""
+    stub.movie = {"id": 7, "title": "Coming", "year": 2027, "hasFile": False,
+                  "path": "/radarr/movies/Coming (2027)"}
+    stub.route("GET", "/api/v3/movie/7", lambda req: (200, stub.movie))
+    stub.route("GET", "/api/v3/movie/8", lambda req: (404, {}))
+    settings.radarr = config.ArrConfig(url=stub.url, api_key="rk")
+    config.save(settings)
+    return stub
+
+
+def test_a_marked_film_is_queued_when_its_file_arrives(radarr, home, tmp_path):
+    db.monitor_add("radarr", "7", "Coming", "new_only")
+    db.monitor_add("radarr", "8", "Gone from Radarr", "new_only")
+    w = worker.Worker(home)
+    assert w.check_monitored() == 0                       # nothing downloaded yet
+    film = tmp_path / "Coming (2027).mkv"
+    film.write_bytes(b"x")
+    radarr.movie = {**radarr.movie, "hasFile": True, "movieFile": {"path": str(film)}}
+    db.enqueue(kind="episode", title="Backlog", path="/tv/other.mkv")
+    assert w.check_monitored() == 1 and w.last_monitor_films == 1
+    job = db.get(db.queued_in_order()[0]["id"])            # ahead of the backlog
+    assert (job["kind"], job["title"], job["subtitle"], job["path"], job["source"],
+            job["source_id"]) == ("movie", "Coming", "2027", str(film), "radarr", "7")
+    assert [r["source_id"] for r in db.monitors("radarr")] == ["8"]   # done with
+    assert radarr.seen("/api/v3/movie/7")[0].headers["x-api-key"] == "rk"
+
+
+def test_a_marked_film_mounted_elsewhere_is_found_on_the_media_server(radarr, home, settings):
+    radarr.movie = {**radarr.movie, "hasFile": True,
+                    "movieFile": {"relativePath": "Coming (2027).mkv"}}   # an older Radarr
+    radarr.route("GET", "/library/sections", {"MediaContainer": {"Directory": [
+        {"key": "2", "type": "movie", "title": "Films"}]}})
+    listed = []
+    radarr.route("GET", "/library/sections/2/all", lambda req: (200, {"MediaContainer": {
+        "totalSize": len(listed), "Metadata": listed}}))
+    settings.media_server = "plex"
+    settings.plex_url, settings.plex_token = radarr.url, "t"
+    config.save(settings)
+    db.monitor_add("radarr", "7", "Coming", "new_only")
+    w = worker.Worker(home)
+    # Radarr has it, at a path that does not open here; Plex has not scanned it.
+    assert w.check_monitored() == 0 and db.is_monitored("radarr", "7")
+    listed.append({"ratingKey": "55", "title": "Coming", "year": 2027, "Media": [{"Part": [
+        {"file": "/data/movies/Coming (2027)/Coming (2027).mkv"}]}]})
+    assert w.check_monitored() == 1
+    job = db.next_queued()
+    assert (job["path"], job["source"], job["source_id"]) == (
+        "/data/movies/Coming (2027)/Coming (2027).mkv", "plex", "55")
+    assert not db.is_monitored("radarr", "7")
+
+
+def test_a_marked_film_already_censored_just_loses_its_mark(radarr, home, tmp_path):
+    film = tmp_path / "Coming (2027).mkv"
+    film.write_bytes(b"x")
+    radarr.movie = {**radarr.movie, "hasFile": True, "movieFile": {"path": str(film)}}
+    db.update(db.enqueue(kind="movie", title="Coming", path=str(film)), status="done")
+    db.monitor_add("radarr", "7", "Coming", "new_only")
+    assert worker.Worker(home).check_monitored() == 0
+    assert not db.is_monitored("radarr", "7") and db.next_queued() is None
