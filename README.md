@@ -381,9 +381,20 @@ opinion is on, neither changes the muting:
   file rather than flagging everything.
 
 Flagged words are marked **Worth a listen** in the job's details, and the
-Censored page can show only the files that have one. **That was wrong** on the
-word fixes it for next time; **Censor again** applies it now, and reuses the
-saved transcript, so the slow listening step is skipped.
+Censored page can show only the files that have one. **That was wrong** on a
+word offers two kinds of fix:
+
+* **This moment only** — *Leave this one in* (or *Mute this one*, for a word
+  that was left in). For *gotta* heard as *God* once in an episode: nothing
+  else changes, and the word is still muted everywhere it really is the word.
+  Go through all the doubtful ones first; the job's details count what is
+  waiting.
+* **The word from now on** — never mute it in this show, never mute it
+  anywhere, or check it in context. Checking in context needs a second
+  opinion set up, and only matters where the subtitles do not settle the word.
+
+**Censor again** applies both, reusing the saved transcript, so the slow
+listening step is skipped.
 
 ---
 

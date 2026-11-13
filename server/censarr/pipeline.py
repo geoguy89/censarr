@@ -440,6 +440,9 @@ class Pipeline:
             matches, judged = self._adjudicate(matches, transcript.words, settings)
             matches = sorted([*settled, *extra, *alike_muted, *matches], key=lambda m: m.start)
             kept = sorted([*alike_kept, *judged], key=lambda m: m.start)
+            matches, kept, overruled = _apply_overrides(str(path), matches, kept)
+            if overruled:
+                sub_note += f" · {overruled} as you corrected"
             db.save_detections(job_id, matches, kept)
             spans = words.to_spans(matches, settings.pad_start, settings.pad_end)
 
@@ -474,6 +477,31 @@ class Pipeline:
                     "cached_transcript": transcript.cached}
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _apply_overrides(path: str, muted, kept):
+    """A person's word on one moment beats everything else that decided it.
+
+    Returns the muted and the left-in words with those decisions applied, and
+    how many it changed. A decision for a word that is not found this time -
+    the word lists changed, say - does nothing.
+    """
+    rules = db.overrides(path)
+    if not rules:
+        return muted, kept, 0
+
+    def verdict(m) -> str:
+        return db.override_for(rules, m.start, words.normalize(m.text))
+
+    to_keep = [m for m in muted if verdict(m) == "keep"]
+    to_mute = [m for m in kept if verdict(m) == "mute"]
+    muted = [m for m in muted if verdict(m) != "keep"] + [
+        replace(m, needs_review=True, reason="muted: you marked this one") for m in to_mute]
+    kept = [m for m in kept if verdict(m) != "mute"] + [
+        replace(m, needs_review=True, reason="left in: you marked this one as wrong")
+        for m in to_keep]
+    return (sorted(muted, key=lambda m: m.start), sorted(kept, key=lambda m: m.start),
+            len(to_keep) + len(to_mute))
 
 
 def _sweep_stale_work(folder: Path, older_than: float = 6 * 3600) -> None:

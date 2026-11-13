@@ -220,6 +220,41 @@ def test_job_detail_lists_detections(client, settings):
     assert got["detections"][0]["text"] == "shit"
 
 
+def test_one_detection_can_be_overruled_and_the_choice_undone(client, settings):
+    from censarr import words
+    job = db.enqueue(kind="episode", title="Show", path="/tv/x.mkv")
+    db.save_detections(job, [words.Match(70.4, 70.8, "God.", "blasphemy"),
+                             words.Match(90.0, 90.3, "God", "blasphemy")])
+    first, second = db.detections(job)
+    said = client.post(f"/api/detections/{first['id']}/override", json={"verdict": "keep"}).json()
+    assert (said["word"], said["verdict"]) == ("god", "keep")
+    got = {d["start"]: d["override"] for d in client.get(f"/api/jobs/{job}").json()["detections"]}
+    assert got == {70.4: "keep", 90.0: ""}                     # this moment only
+    # A later job for the same file sees the same choice.
+    db.update(job, status="done")
+    later = db.enqueue(kind="episode", title="Show", path="/tv/x.mkv", force=True)
+    db.save_detections(later, [words.Match(70.4, 70.8, "God.", "blasphemy")])
+    assert client.get(f"/api/jobs/{later}").json()["detections"][0]["override"] == "keep"
+    client.post(f"/api/detections/{first['id']}/override", json={"verdict": "clear"})
+    assert client.get(f"/api/jobs/{job}").json()["detections"][0]["override"] == ""
+    assert client.post(f"/api/detections/{first['id']}/override",
+                       json={"verdict": "maybe"}).status_code == 400
+    assert config.load().allow_words == []
+
+
+def test_check_in_context_says_whether_it_can_do_anything(client, settings):
+    from censarr import words
+    job = db.enqueue(kind="episode", title="Show", path="/tv/x.mkv")
+    db.save_detections(job, [words.Match(1.0, 1.2, "God", "blasphemy")])
+    d = db.detections(job)[0]
+    assert client.post(f"/api/detections/{d['id']}/correct",
+                       json={"list": "context"}).json()["judge_configured"] is False
+    settings.judge_url = "http://ollama.invalid:11434"
+    config.save(settings)
+    assert client.post(f"/api/detections/{d['id']}/correct",
+                       json={"list": "context"}).json()["judge_configured"] is True
+
+
 def test_remove_all_needs_the_phrase(client, settings):
     assert client.post("/api/history/remove-all", json={}).status_code == 400
     job = db.enqueue(kind="file", title="x", path="/tv/x.mkv")

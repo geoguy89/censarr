@@ -1156,7 +1156,6 @@ function renderJob() {
     ${job.status === 'done' && (job.action || 'clean') === 'clean' ? `<button type="button" class="btn ghost sm" data-action="job-remove">Remove the censored track</button>` : ''}`;
 
   const left = detections.filter((d) => !d.muted);
-  const judge = true;   // every word is read against the subtitles
   const message = job.status === 'failed'
     ? `<div class="alert error" role="alert">${icon('alert')}<div class="grow"><strong>This job failed</strong>${esc(job.message)}</div></div>`
     : (job.message ? `<p class="muted">${esc(job.message)}</p>` : '');
@@ -1167,18 +1166,33 @@ function renderJob() {
     ${job.duration ? `<div><b>${stamp(job.duration)}</b><span>long</span></div>` : ''}
     ${job.finished_at ? `<div><b>${when(job.finished_at)}</b><span>finished</span></div>` : ''}
   </div>`;
-  const banner = changed ? `<div class="alert info" role="status">${icon('info')}<div class="grow">
-      <strong>Word lists changed</strong>Censor this file again to apply them.
+  // A decision is waiting while it disagrees with what this job did.
+  const waiting = detections.filter(pending).length;
+  const what = [
+    waiting ? `${plural(waiting, 'word')} you corrected` : '',
+    changed ? 'word lists changed' : '',
+  ].filter(Boolean).join(', and ');
+  const banner = what ? `<div class="alert info" role="status">${icon('info')}<div class="grow">
+      <strong>${what[0].toUpperCase()}${what.slice(1)}</strong>Censor this file again to apply ${waiting + (changed ? 1 : 0) === 1 ? 'it' : 'them'}.
+      Whisper's transcript is kept, so it does not listen again.
       <div class="actions"><button type="button" class="btn sm" data-action="job-again">Censor again now</button></div></div></div>` : '';
 
   const rows = detections.map((d) => {
     const word = esc(d.text.replace(/^[^\w']+|[^\w']+$/g, '') || d.text);
+    // This one moment first: the lists below change every future match.
+    const one = d.override
+      ? `<button type="button" data-action="override" data-id="${d.id}" data-verdict="clear">${icon('refresh')}Undo my choice for this one</button>`
+      : (d.muted
+        ? `<button type="button" data-action="override" data-id="${d.id}" data-verdict="keep">${icon('check')}Leave this one in (only at ${stamp(d.start)})</button>`
+        : `<button type="button" data-action="override" data-id="${d.id}" data-verdict="mute">${icon('mute')}Mute this one (only at ${stamp(d.start)})</button>`);
     const menu = d.muted
-      ? `<button type="button" data-action="correct" data-id="${d.id}" data-list="never_here">${icon('tv')}Never mute “${word}” in ${esc(job.title)}</button>
+      ? `${one}
+         <button type="button" data-action="correct" data-id="${d.id}" data-list="never_here">${icon('tv')}Never mute “${word}” in ${esc(job.title)}</button>
          <button type="button" data-action="correct" data-id="${d.id}" data-list="never">${icon('x')}Never mute “${word}” anywhere</button>
          <button type="button" data-action="correct" data-id="${d.id}" data-list="context">${icon('chat')}Check “${word}” in context</button>
-         ${judge ? '' : '<p class="note">No second opinion is set up, so a word checked in context is still muted until one is.</p>'}`
-      : `<button type="button" data-action="correct" data-id="${d.id}" data-list="always">${icon('mute')}Always mute “${word}”</button>`;
+         ${state.settings?.judge_url ? '' : '<p class="note">Checking in context needs a second opinion (Settings), and only applies where the subtitles do not settle the word.</p>'}`
+      : `${one}
+         <button type="button" data-action="correct" data-id="${d.id}" data-list="always">${icon('mute')}Always mute “${word}”</button>`;
     // The evidence a person needs to decide: what Whisper thought of the word,
     // and what the subtitles say at that moment. Neither changed the muting.
     const evidence = [];
@@ -1203,32 +1217,53 @@ function renderJob() {
     } else if (d.subtitle_state === 'omits') {
       evidence.push('Subtitles leave it out');
     }
-    const check = worthChecking(d);
-    return `<div class="detection${d.fixed ? ' fixed' : ''}${check ? ' check' : ''}">
+    const check = worthChecking(d) && !d.override;
+    const choice = d.override === 'keep'
+      ? (pending(d) ? 'You said leave this one in. Censor again to apply it.' : 'Left in, as you said.')
+      : d.override === 'mute'
+        ? (pending(d) ? 'You said mute this one. Censor again to apply it.' : 'Muted, as you said.')
+        : '';
+    return `<div class="detection${d.fixed || d.override ? ' fixed' : ''}${check ? ' check' : ''}">
       <span class="at">${stamp(d.start)}</span>
       <div><div class="word">${esc(d.text)} ${d.muted ? '<span class="badge done">Muted</span>' : '<span class="badge">Left in</span>'}${
           check ? ' <span class="badge queued">Worth a listen</span>' : ''}</div>
         <div class="reason">${esc([categoryName(d.category), d.reason].filter(Boolean).join(' · '))}</div>
         ${evidence.length ? `<div class="reason">${evidence.join(' · ')}</div>` : ''}
-        ${d.fixed ? `<div class="reason" style="color:var(--accent-text)">${esc(d.fixed)}</div>` : ''}</div>
+        ${d.fixed ? `<div class="reason" style="color:var(--accent-text)">${esc(d.fixed)}</div>` : ''}
+        ${choice ? `<div class="reason" style="color:var(--accent-text)">${esc(choice)}</div>` : ''}</div>
       <details class="menu">
         <summary class="btn ghost sm" aria-label="That was wrong: ${word} at ${stamp(d.start)}">${icon('flag')}That was wrong</summary>
         <div class="menu-list">${menu}</div>
       </details></div>`;
   }).join('');
 
-  const toCheck = detections.filter(worthChecking).length;
+  const toCheck = detections.filter((d) => worthChecking(d) && !d.override).length;
   const review = toCheck ? `<div class="alert warn">${icon('alert')}<div class="grow">
       <strong>${plural(toCheck, 'word')} worth a listen</strong>
       Whisper was unsure of ${toCheck === 1 ? 'it' : 'them'}, or the subtitles say something else there.
-      ${toCheck === 1 ? 'It is' : 'They are'} still muted; if one is wrong, say so below.</div></div>` : '';
+      ${toCheck === 1 ? 'It is' : 'They are'} still muted. If one is wrong, choose <strong>That was wrong → Leave this one in</strong>, then censor again once you have been through them.</div></div>` : '';
   $('#sheet-body').innerHTML = `${message}${banner}${review}${meta}
     <h3 style="font-size:1rem">What was found</h3>
-    <p class="muted small">Every word matched, where it was, and why. If one is wrong, say so and its word goes on a list for next time.</p>
+    <p class="muted small">Every word matched, where it was, and why. If one is wrong, say so: for that moment only, or for the word from now on.</p>
     ${detections.length ? `<div class="detections">${rows}</div>`
       : empty({ icon: 'check', title: job.status === 'failed' ? 'Nothing recorded' : 'Nothing found',
         text: job.status === 'failed' ? 'The job stopped before listening finished.' : 'No listed word was heard in this file.' })}`;
 }
+
+/* A decision for one moment that this job did not follow yet. */
+const pending = (d) => (d.override === 'keep' && !!d.muted) || (d.override === 'mute' && !d.muted);
+
+ACTIONS.override = async (el) => {
+  const det = state.sheet.detections.find((d) => String(d.id) === el.dataset.id);
+  const result = await api(`/api/detections/${el.dataset.id}/override`,
+    { method: 'POST', body: { verdict: el.dataset.verdict } });
+  if (det) det.override = result.verdict;
+  renderJob();
+  const at = stamp(result.at);
+  toast(result.verdict === 'keep' ? `“${result.word}” at ${at} will be left in next time`
+    : result.verdict === 'mute' ? `“${result.word}” at ${at} will be muted next time`
+      : `Your choice for “${result.word}” at ${at} is gone`);
+};
 
 const LIST_NAMES = { never: 'Never silence', never_here: 'this show’s exceptions',
   context: 'Check in context', always: 'Always silence' };
@@ -1242,8 +1277,8 @@ ACTIONS.correct = async (el) => {
     never: `“${result.word}” will never be muted`,
     never_here: `“${result.word}” will never be muted in ${result.title}`,
     context: result.judge_configured
-      ? `“${result.word}” will be checked in context`
-      : `“${result.word}” is on the check list, but without a second opinion it is still muted`,
+      ? `“${result.word}” will be checked in context where the subtitles do not settle it`
+      : `“${result.word}” is on the check list, but no second opinion is set up, so it is still muted. To fix one moment, use “Leave this one in”`,
     always: `“${result.word}” will always be muted`,
   }[list];
   state.sheet.detections.forEach((d) => {

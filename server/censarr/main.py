@@ -1690,7 +1690,37 @@ def job_detail(job_id: int):
     row = db.get(job_id)
     if row is None:
         raise HTTPException(404, "no such job")
-    return {"job": dict(row), "detections": [dict(d) for d in db.detections(job_id)]}
+    rules = db.overrides(row["path"])
+    found = []
+    for d in db.detections(job_id):
+        item = dict(d)
+        # What a person decided for this moment: "keep", "mute" or "". The
+        # page compares it with `muted` to tell waiting from already applied.
+        item["override"] = db.override_for(rules, d["start"], words.normalize(d["text"]))
+        found.append(item)
+    return {"job": dict(row), "detections": found}
+
+
+@app.post("/api/detections/{detection_id}/override")
+def override_detection(detection_id: int, payload: dict):
+    """Decide one word at one moment: leave it in, mute it, or forget the
+    decision. Applied the next time the file is censored."""
+    row = db.detection(detection_id)
+    if row is None:
+        raise HTTPException(404, "no such detection")
+    verdict = str(payload.get("verdict", ""))
+    if verdict not in ("keep", "mute", "clear"):
+        raise HTTPException(400, "verdict must be keep, mute or clear")
+    job = db.get(row["job_id"])
+    word = words.normalize(row["text"])
+    if job is None or not word:
+        raise HTTPException(400, "that detection has no file or word")
+    if verdict == "clear":
+        db.override_clear(job["path"], row["start"], word)
+    else:
+        db.override_set(job["path"], row["start"], word, verdict)
+    return {"word": word, "verdict": "" if verdict == "clear" else verdict,
+            "at": row["start"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1768,8 +1798,9 @@ def correct_detection(detection_id: int, payload: dict):
         if target == "never":
             settings.custom_words = _without(settings.custom_words, word)
     config.save(settings)
+    # Whether "check in context" can do anything: it needs a model to ask.
     return {"word": word, "list": target, "added": added, "job_id": row["job_id"],
-            "title": title, "judge_configured": True}
+            "title": title, "judge_configured": bool(settings.judge_url)}
 
 
 @app.delete("/api/words/{list_name}/{word}")

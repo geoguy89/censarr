@@ -116,6 +116,41 @@ def test_jellyfin_is_asked_to_read_the_file_again(home, settings, fake_asr, stub
     assert not stub.seen("/Library/Media/Updated")
 
 
+def test_one_word_marked_wrong_is_left_in_when_censored_again(home, settings, fake_asr, episode):
+    job = run(episode, settings, home / "cache")
+    fuck = next(d for d in db.detections(job["id"]) if d["text"].startswith("fuck"))
+    # Leave this one in: only this moment, not the word.
+    db.override_set(str(episode), fuck["start"], "fuck", "keep")
+    again = run(episode, settings, home / "cache", force=True)
+    assert again["status"] == "done", again["message"]
+    assert again["muted"] == 1 and "1 as you corrected" in again["message"]
+    rows = {r["text"]: (r["muted"], r["reason"]) for r in db.detections(again["id"])}
+    assert rows["fuck,"] == (0, "left in: you marked this one as wrong")
+    assert rows["cock"][0] == 1                                # the other word is not touched
+    pcm, loud = samples(episode, 1), rms(samples(episode, 0), 0.1, 0.4)
+    assert rms(pcm, 1.0, 1.4) > loud * 0.5                     # audible again
+    assert rms(pcm, 3.0, 3.4) < loud * 0.01
+    assert config.load().allow_words == []                     # no list was changed
+
+
+def test_overrides_move_words_both_ways_and_only_at_their_moment():
+    from censarr import words
+    path = "/tv/override.mkv"
+    db.override_set(path, 10.0, "god", "keep")
+    db.override_set(path, 50.0, "caulk", "mute")
+    muted = [words.Match(10.2, 10.5, "God.", "blasphemy"), words.Match(90.0, 90.3, "God", "blasphemy")]
+    kept = [words.Match(50.1, 50.4, "caulk", "slurs_sexual")]
+    muted, kept, changed = pipeline._apply_overrides(path, muted, kept)
+    assert changed == 2
+    assert [(m.text, m.start) for m in muted] == [("caulk", 50.1), ("God", 90.0)]
+    assert [(m.text, m.reason) for m in kept] == [("God.", "left in: you marked this one as wrong")]
+    assert muted[0].reason == "muted: you marked this one"
+    # Cleared, nothing is overruled; another file is never affected.
+    db.override_clear(path, 10.3, "god")
+    assert db.override_for(db.overrides(path), 10.2, "god") == ""
+    assert pipeline._apply_overrides("/tv/other.mkv", muted, kept)[2] == 0
+
+
 def test_a_lookalike_track_is_never_replaced(home, settings, fake_asr, tmp_path):
     src = make_media(tmp_path / "e.mkv", seconds=3.0, title="English")
     settings.track_title = "English"

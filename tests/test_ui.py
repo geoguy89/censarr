@@ -361,6 +361,25 @@ def test_that_was_wrong_puts_the_word_on_a_list_and_undo_takes_it_off(desk):
     assert config.load().allow_words == []
 
 
+def test_one_word_can_be_left_in_then_the_file_censored_again(desk):
+    page = desk.go("cleaned")
+    page.locator("#view-cleaned [data-action=open-job]").last.click()
+    page.locator(".detection").first.wait_for()
+    row = page.locator(".detection", has_text="Dick,")
+    row.locator("summary", has_text="That was wrong").click()
+    row.get_by_role("button", name=re.compile("Leave this one in")).click()
+    page.locator(".toast", has_text="will be left in next time").wait_for()
+    body = page.locator("#sheet-body").inner_text()
+    assert "1 word you corrected" in body and "Censor again to apply it" in body
+    assert config.load().allow_words == [] and not config.load().allow_words_by_title.get("Dick")
+    # Changed my mind.
+    row.locator("summary", has_text="That was wrong").click()
+    row.get_by_role("button", name="Undo my choice for this one").click()
+    page.locator(".toast", has_text="is gone").wait_for()
+    assert "you corrected" not in page.locator("#sheet-body").inner_text()
+    assert desk.errors == []
+
+
 def test_a_word_left_in_can_be_made_always_muted(desk):
     page = desk.go("cleaned")
     page.locator("#view-cleaned .row", has_text=re.compile("The Quiet Harbour.*S01E02")).locator(

@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS detection (
   muted    INTEGER DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS detection_job ON detection (job_id, start);
+
+-- One word at one moment of one file, decided by a person: "keep" leaves it
+-- in, "mute" mutes it, whatever the word lists and the subtitles say. Kept by
+-- file rather than by job, so the next censor of the file applies it; the
+-- transcript is cached against the audio, so the word comes back at the same
+-- moment. `text` is the bare word (words.normalize).
+CREATE TABLE IF NOT EXISTS override (
+  path       TEXT NOT NULL,
+  start      REAL NOT NULL,
+  text       TEXT NOT NULL,
+  verdict    TEXT NOT NULL,          -- keep | mute
+  created_at REAL NOT NULL,
+  PRIMARY KEY (path, start, text)
+);
 """
 
 
@@ -391,6 +405,40 @@ def save_detections(job_id: int, muted, left_in=()) -> None:
         "INSERT INTO detection (job_id, start, end, text, category, review, reason, muted,"
         " confidence, subtitle, subtitle_state) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
+
+
+# How far apart two times may be and still be the same word at the same moment.
+OVERRIDE_SLACK = 0.5
+
+
+def overrides(path: str) -> list[sqlite3.Row]:
+    return connect().execute(
+        "SELECT * FROM override WHERE path=? ORDER BY start", (path,)).fetchall()
+
+
+def override_set(path: str, start: float, text: str, verdict: str) -> None:
+    conn = connect()
+    override_clear(path, start, text, commit=False)
+    conn.execute("INSERT INTO override (path, start, text, verdict, created_at) "
+                 "VALUES (?,?,?,?,?)", (path, float(start), text, verdict, time.time()))
+    conn.commit()
+
+
+def override_clear(path: str, start: float, text: str, commit: bool = True) -> int:
+    conn = connect()
+    cur = conn.execute("DELETE FROM override WHERE path=? AND text=? AND ABS(start-?)<?",
+                       (path, text, float(start), OVERRIDE_SLACK))
+    if commit:
+        conn.commit()
+    return cur.rowcount
+
+
+def override_for(rules, start: float, text: str) -> str:
+    """The verdict among `rules` for this word at this moment, or ""."""
+    for r in rules:
+        if r["text"] == text and abs(r["start"] - start) < OVERRIDE_SLACK:
+            return r["verdict"]
+    return ""
 
 
 def detection(detection_id: int) -> sqlite3.Row | None:

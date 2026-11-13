@@ -39,7 +39,9 @@ def test_check_in_context(client, settings, detection):
     settings.check_in_context = []
     config.save(settings)
     r = client.post(f"/api/detections/{detection['Dick,']}/correct", json={"list": "context"})
-    assert r.json()["judge_configured"] is True        # every word meets the subtitles
+    # Without a model to ask, checking in context cannot leave anything in,
+    # and the page says so rather than promising it will.
+    assert r.json()["judge_configured"] is False
     assert config.load().check_in_context == ["dick"]
 
 
