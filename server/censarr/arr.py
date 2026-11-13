@@ -285,7 +285,7 @@ class Radarr(Client):
         out = []
         for m in rows or []:
             day = str(m.get("digitalRelease") or "")[:10]
-            if not day or not start <= day <= end:
+            if not day or not start <= day <= end or self._rerelease(m, day):
                 continue
             out.append({"id": m.get("id"), "title": m.get("title", ""),
                         "year": m.get("year"), "airs": day, "release_kind": "digital release",
@@ -293,6 +293,21 @@ class Radarr(Client):
                         "wanted": bool(m.get("monitored", True))})
         out.sort(key=lambda f: (f["airs"], (f["title"] or "").lower()))
         return out
+
+    @staticmethod
+    def _rerelease(m: dict, digital: str) -> bool:
+        """A digital date long after the film first came out is a re-release
+        (a remaster, a new streaming deal) - Radarr's data has them, e.g. a
+        2006 film "released digitally" in 2026. Not a new film coming."""
+        first = sorted(str(m.get(k) or "")[:10] for k in ("inCinemas", "physicalRelease")
+                       if m.get(k))
+        try:
+            if first:
+                gap = _dt.date.fromisoformat(digital) - _dt.date.fromisoformat(first[0])
+                return gap.days > 365
+            return bool(m.get("year")) and int(digital[:4]) - int(m["year"]) > 1
+        except (TypeError, ValueError):
+            return False
 
     def movie(self, movie_id) -> dict:
         """Whether one film has a file now, and where Radarr says it is."""

@@ -508,7 +508,13 @@ def test_film_releases_come_from_radarr_even_without_sonarr(client, settings, st
         {"id": 4, "title": "Two Releases", "year": 2026, "hasFile": False, "monitored": True,
          "inCinemas": f"{day(2)}T00:00:00Z", "digitalRelease": day(9),
          "physicalRelease": day(200)},                    # outside the window
-        {"id": 5, "title": "Got It", "hasFile": True, "monitored": True, "digitalRelease": day(1)}])
+        {"id": 5, "title": "Got It", "hasFile": True, "monitored": True, "digitalRelease": day(1)},
+        # A 2006 film whose data gains a new digital date: a re-release, not coming.
+        {"id": 6, "title": "Old Favourite", "year": 2006, "hasFile": True, "monitored": True,
+         "inCinemas": "2006-03-29T00:00:00Z", "physicalRelease": "2006-10-18T00:00:00Z",
+         "digitalRelease": day(1)},
+        {"id": 7, "title": "Old, No Dates", "year": 2006, "hasFile": False, "monitored": True,
+         "digitalRelease": day(1)}])
     settings.library_source = "plex"
     settings.radarr = config.ArrConfig(url=stub.url, api_key="rk")
     config.save(settings)
