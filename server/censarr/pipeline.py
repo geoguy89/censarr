@@ -485,12 +485,34 @@ def _sweep_stale_work(folder: Path, older_than: float = 6 * 3600) -> None:
     where it is both confusing and expensive.
     """
     now = time.time()
-    for leftover in [*folder.glob("censarr-*"), *folder.glob("cleanarr-*")]:
+    for leftover in [*folder.glob("censarr-*"), *folder.glob("cleanarr-*"),
+                     *folder.glob("cleantrack-*")]:
         try:
-            if leftover.is_dir() and now - leftover.stat().st_mtime > older_than:
-                shutil.rmtree(leftover, ignore_errors=True)
+            if not leftover.is_dir() or now - leftover.stat().st_mtime <= older_than:
+                continue
+            # The oldest name is generic enough that another tool could use
+            # it, so such a folder goes only when it holds nothing but this
+            # app's own scratch files.
+            if leftover.name.startswith("cleantrack-") and not _only_scratch(leftover):
+                continue
+            shutil.rmtree(leftover, ignore_errors=True)
         except OSError:
             pass
+
+
+# What a run writes into its scratch directory: the audio Whisper hears, the
+# subtitles pulled out of the file or another copy, and the remux being built.
+SCRATCH_FILES = {"asr.wav", "subtitles.srt", "other-copy.srt"}
+
+
+def _only_scratch(folder: Path) -> bool:
+    """True when every entry is a plain file a run of this app writes there."""
+    for entry in folder.iterdir():
+        if entry.is_symlink() or not entry.is_file():
+            return False
+        if entry.name not in SCRATCH_FILES and not entry.name.startswith("remux."):
+            return False
+    return True
 
 
 def more_subtitles(settings, kind: str, source: str, source_id: str, path: Path,
@@ -527,7 +549,7 @@ def more_subtitles(settings, kind: str, source: str, source_id: str, path: Path,
                 continue
             if subtitles.parse_srt(text):
                 return text, f"{name.title()} ({label})"
-        return "", "", ""
+        return "", ""
 
     # The server may see the library under another path than this container.
     mine = [v for v in versions if library.same_file(v["path"], here)]

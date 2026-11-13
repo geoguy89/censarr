@@ -10,10 +10,13 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+# Pinned rather than ubuntu-latest: the image itself is Ubuntu 22.04, and a
+# runner that moves on underneath the tests (26.04: no Playwright Chromium,
+# a newer ffmpeg) fails them for reasons that say nothing about the app.
 jobs:
   fast:
     name: Unit and ffmpeg tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,7 +36,7 @@ jobs:
 
   e2e:
     name: End to end (espeak-ng, Whisper tiny.en on CPU)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CENSARR_TEST_MODELS: ${{ github.workspace }}/.models
     steps:
@@ -58,7 +61,7 @@ jobs:
 
   ui:
     name: The page in Chromium
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

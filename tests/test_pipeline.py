@@ -253,6 +253,35 @@ def test_scratch_folders_left_by_a_killed_run_are_swept(tmp_path):
     assert fresh.exists() and mine.exists()
 
 
+def test_scratch_folders_under_the_oldest_name_are_swept_too(tmp_path):
+    import os
+    import time
+    stale = time.time() - 7 * 3600
+    old = tmp_path / "cleantrack-abc123"           # asr.wav left by a killed run
+    old.mkdir()
+    (old / "asr.wav").write_bytes(b"RIFF")
+    (old / "subtitles.srt").write_text("")
+    (old / "remux.mkv").write_bytes(b"")
+    fresh = tmp_path / "cleantrack-fresh"           # a run may still be using it
+    fresh.mkdir()
+    (fresh / "asr.wav").write_bytes(b"RIFF")
+    foreign = tmp_path / "cleantrack-other"         # not ours: never touched
+    foreign.mkdir()
+    (foreign / "Episode.mkv").write_bytes(b"media")
+    nested = tmp_path / "cleantrack-nested"         # holds a folder: not ours either
+    (nested / "sub").mkdir(parents=True)
+    episode = tmp_path / "cleantrack-e1.mkv"        # a file, not a scratch folder
+    episode.write_bytes(b"media")
+    for path in (old, foreign, nested, episode):
+        os.utime(path, (stale, stale))
+    pipeline._sweep_stale_work(tmp_path)
+    assert not old.exists()
+    assert fresh.exists() and (fresh / "asr.wav").exists()
+    assert (foreign / "Episode.mkv").exists()
+    assert (nested / "sub").exists()
+    assert episode.exists()
+
+
 def test_not_enough_space_stops_before_anything_is_written(home, settings, fake_asr,
                                                              episode, monkeypatch):
     monkeypatch.setattr(media, "free_space", lambda path: 1024)
@@ -516,6 +545,38 @@ def test_the_media_server_is_asked_to_search_when_nothing_else_has_them(
     assert job["muted"] == 1
     assert "subtitles from a Plex search (English (OpenSubtitles))" in job["message"]
     assert server.found_for == [("episode", "Show")] and server.searched == ["41"]
+
+
+def test_a_search_whose_subtitles_never_appear_still_cleans(home, settings, monkeypatch, tmp_path):
+    # The server says it attached subtitles, but none ever show up on the
+    # file. This used to fail the whole job with "too many values to unpack".
+    unsure_cock(monkeypatch)
+    monkeypatch.setattr(pipeline, "SEARCH_WAIT", 0)
+    plain = make_media(tmp_path / "e1.mkv", seconds=6.0, subtitles=False)
+    server = FakeServer([{"path": str(plain), "subtitles": []}],
+                        on_search=[{"path": str(plain), "subtitles": []}])
+    monkeypatch.setattr(pipeline.library, "server", lambda s, name="": server)
+    job = run(plain, settings, home / "cache", source="plex", source_id="41")
+    assert job["status"] == "done", job["message"]
+    assert job["muted"] == 2 and server.searched == ["41"]
+    assert "no subtitles found" in job["message"]
+
+
+def test_another_copy_without_subtitles_does_not_stop_the_job(
+        home, settings, monkeypatch, tmp_path):
+    unsure_cock(monkeypatch)
+    settings.media_server = "plex"
+    folder = tmp_path / "movies" / "Film"
+    folder.mkdir(parents=True)
+    plain = make_media(folder / "Film WEBRip.mkv", seconds=6.0, subtitles=False)
+    other = make_media(folder / "Film WEBDL.mkv", seconds=6.0, subtitles=False)
+    server = FakeServer([{"path": str(plain), "subtitles": []},
+                         {"path": str(other), "subtitles": []}],
+                        films=[{"id": "5", "path": str(plain)}])
+    monkeypatch.setattr(pipeline.library, "server", lambda s, name="": server)
+    job = run_film(plain, settings, home / "cache")
+    assert job["status"] == "done", job["message"]
+    assert "no subtitles found" in job["message"]
 
 
 def test_a_search_that_finds_nothing_leaves_everything_muted(home, settings, monkeypatch, tmp_path):
