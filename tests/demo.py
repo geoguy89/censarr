@@ -204,7 +204,7 @@ class Demo:
         r.route("GET", "/api/v3/movie", on_disk + waiting)
         out_on_disc = next(m for m in on_disk if m["title"] == "Blue Hour")
         r.route("GET", "/api/v3/calendar", lambda req: (200, [
-            waiting[1], {**out_on_disc, "digitalRelease": soon(2)},
+            waiting[1], {**out_on_disc, "inCinemas": soon(-40), "digitalRelease": soon(2)},
             {**waiting[0], "inCinemas": soon(4)}]))       # in cinemas only: not shown
         for n, film in enumerate([*waiting, out_on_disc]):
             r.route("GET", f"/api/v3/mediacover/{film['id']}/poster-500.jpg",
