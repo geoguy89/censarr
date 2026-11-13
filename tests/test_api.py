@@ -495,10 +495,46 @@ def test_media_sessions_endpoint(client, settings, stub):
     assert data["sessions"][0]["description"].startswith("dad is watching Film")
 
 
-def test_calendar_needs_sonarr(client, settings):
+def test_calendar_needs_sonarr_or_radarr(client, settings):
     settings.library_source = "plex"
     config.save(settings)
     assert client.get("/api/calendar").json()["unavailable"] is True
+
+
+def test_film_releases_come_from_radarr_even_without_sonarr(client, settings, stub):
+    import datetime as dt
+    day = lambda n: (dt.date.today() + dt.timedelta(days=n)).isoformat()  # noqa: E731
+    stub.route("GET", "/api/v3/calendar", [
+        {"id": 4, "title": "Two Releases", "year": 2026, "hasFile": False, "monitored": True,
+         "inCinemas": f"{day(2)}T00:00:00Z", "digitalRelease": day(9),
+         "physicalRelease": day(200)},                    # outside the window
+        {"id": 5, "title": "Got It", "hasFile": True, "monitored": True, "digitalRelease": day(1)}])
+    settings.library_source = "plex"
+    settings.radarr = config.ArrConfig(url=stub.url, api_key="rk")
+    config.save(settings)
+    db.monitor_add("radarr", "4", "Two Releases", "new_only")
+    got = client.get("/api/calendar", params={"days": 14}).json()
+    assert got["items"] == [] and got["problems"] == []
+    assert [(f["title"], f["airs"], f["release_kind"], f["marked"], f["has_file"])
+            for f in got["films"]] == [
+        ("Got It", day(1), "digital release", False, True),
+        ("Two Releases", day(2), "in cinemas", True, False),
+        ("Two Releases", day(9), "digital release", True, False)]
+    assert stub.seen("/api/v3/calendar")[0].query["unmonitored"] == ["false"]
+    assert client.get("/api/movies").status_code in (200, 502)   # says whether Radarr is set:
+    assert client.get("/api/home").json()["radarr"] is True
+
+
+def test_one_calendar_failing_still_shows_the_other(client, settings, stub):
+    stub.route("GET", "/api/v3/calendar", lambda req: (500, {}))
+    settings.sonarr = config.ArrConfig(url=stub.url, api_key="k")
+    settings.radarr = config.ArrConfig(url="http://127.0.0.1:9", api_key="rk")
+    config.save(settings)
+    r = client.get("/api/calendar")
+    assert r.status_code == 502 and "Sonarr" in r.json()["detail"] and "Radarr" in r.json()["detail"]
+    stub.route("GET", "/api/v3/calendar", [])
+    got = client.get("/api/calendar").json()
+    assert got["items"] == [] and got["problems"][0].startswith("Radarr:")
 
 
 # ---------------------------------------------------------------- the library views

@@ -198,9 +198,10 @@
     <section class="view" id="view-upcoming" data-title="Upcoming" hidden>
       <header class="page-head">
         <h1 tabindex="-1">Upcoming</h1>
-        <p class="lede muted">Sonarr's calendar. Switch on <strong>Censor new
-          episodes</strong> for a show and each episode is censored as it
-          downloads.</p>
+        <p class="lede muted">What is coming: episodes from Sonarr, and film
+          releases from Radarr if you have added it. Switch on <strong>Censor new
+          episodes</strong> for a show, or <strong>Censor when it downloads</strong>
+          for a film, and it is censored as it arrives.</p>
       </header>
       <div class="toolbar">
         <label class="select-inline"><span class="sr-only">How far ahead</span>
@@ -212,10 +213,12 @@
           </select></label>
         <label class="select-inline"><span class="sr-only">Show</span>
           <select id="calendar-filter">
-            <option value="all">Everything airing</option>
+            <option value="all">Everything coming</option>
             <option value="missing">Not downloaded yet</option>
-            <option value="monitored">Shows I censor</option>
-            <option value="unmonitored">Shows I don't censor</option>
+            <option value="monitored">Set to censor</option>
+            <option value="unmonitored">Not set to censor</option>
+            <option value="episodes">Episodes only</option>
+            <option value="films">Films only</option>
           </select></label>
         <span id="calendar-count" class="muted count-note" aria-live="polite"></span>
       </div>
@@ -758,6 +761,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=10"></script>
 </body>
 </html>

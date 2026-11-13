@@ -273,6 +273,30 @@ class Radarr(Client):
         out.sort(key=lambda m: (m["released"] or "9999", (m["title"] or "").lower()))
         return out
 
+    RELEASES = (("inCinemas", "in cinemas"), ("digitalRelease", "digital release"),
+                ("physicalRelease", "on disc"))
+
+    def calendar(self, days: int = 21, back: int = 1) -> list[dict]:
+        """Film releases due in the window, one row per release - a film out
+        in cinemas this week and digitally next has both. Only the films
+        Radarr is looking for, as Sonarr's calendar shows only wanted shows."""
+        today = _dt.date.today()
+        start = (today - _dt.timedelta(days=back)).isoformat()
+        end = (today + _dt.timedelta(days=days)).isoformat()
+        rows = self._get("calendar", start=start, end=end, unmonitored="false")
+        out = []
+        for m in rows or []:
+            for key, kind in self.RELEASES:
+                day = str(m.get(key) or "")[:10]
+                if not day or not start <= day <= end:
+                    continue
+                out.append({"id": m.get("id"), "title": m.get("title", ""),
+                            "year": m.get("year"), "airs": day, "release_kind": kind,
+                            "has_file": bool(m.get("hasFile")),
+                            "wanted": bool(m.get("monitored", True))})
+        out.sort(key=lambda f: (f["airs"], (f["title"] or "").lower()))
+        return out
+
     def movie(self, movie_id) -> dict:
         """Whether one film has a file now, and where Radarr says it is."""
         m = self._get(f"movie/{movie_id}") or {}

@@ -190,17 +190,23 @@ class Demo:
         s.route("GET", "/api/v3/episodefile", files)
         s.route("GET", "/api/v3/history", lambda req: (200, {"records": self.history}))
         s.route("GET", "/api/v3/calendar", lambda req: (200, self.calendar()))
-        # Radarr, on the same stand-in: the films on disk, and two still to come.
+        # Radarr: the films on disk, two still to come, and a calendar.
+        self.radarr = r = Stub().start()
+        soon = lambda days: (dt.date.today() + dt.timedelta(days=days)).isoformat()  # noqa: E731
         waiting = [{"id": 901, "title": "Northern Lights", "year": 2027, "hasFile": False,
                     "monitored": True, "status": "announced"},
                    {"id": 902, "title": "Paper Lanterns", "year": 2026, "hasFile": False,
                     "monitored": True, "status": "inCinemas", "inCinemas": "2026-10-02",
-                    "digitalRelease": "2099-01-15"}]
-        s.route("GET", "/api/v3/movie", [{"id": m["id"], "title": m["title"], "year": m["year"],
-                                          "hasFile": True, "monitored": True}
-                                         for m in self.movies] + waiting)
-        for n, film in enumerate(waiting):
-            s.route("GET", f"/api/v3/mediacover/{film['id']}/poster-500.jpg",
+                    "digitalRelease": soon(3)}]
+        on_disk = [{"id": m["id"], "title": m["title"], "year": m["year"],
+                    "hasFile": True, "monitored": True} for m in self.movies]
+        r.route("GET", "/api/v3/system/status", {"appName": "Radarr", "version": "5.9"})
+        r.route("GET", "/api/v3/movie", on_disk + waiting)
+        out_on_disc = next(m for m in on_disk if m["title"] == "Blue Hour")
+        r.route("GET", "/api/v3/calendar", lambda req: (200, [
+            waiting[1], {**out_on_disc, "physicalRelease": soon(2)}]))
+        for n, film in enumerate([*waiting, out_on_disc]):
+            r.route("GET", f"/api/v3/mediacover/{film['id']}/poster-500.jpg",
                     lambda req, t=film["title"], n=n: (200, poster(t, n + 40, self.art)))
         # Films come from the media server, as they do for real.
         p.route("GET", "/library/sections", {"MediaContainer": {"Directory": [
@@ -228,7 +234,7 @@ class Demo:
         from censarr import config
         settings = config.Settings()
         settings.sonarr = config.ArrConfig(url=self.sonarr.url, api_key="demo-sonarr-key")
-        settings.radarr = config.ArrConfig(url=self.sonarr.url, api_key="demo-radarr-key")
+        settings.radarr = config.ArrConfig(url=self.radarr.url, api_key="demo-radarr-key")
         settings.media_server = "plex"
         settings.plex_url, settings.plex_token = self.plex.url, "demo-plex-token"
         settings.check_in_context = ["cock", "christ", "jesus"]
@@ -329,7 +335,8 @@ class Demo:
     def stop(self):
         if self.server:
             self.server.should_exit = True
-        for stub in (getattr(self, "sonarr", None), getattr(self, "plex", None)):
+        for stub in (getattr(self, "sonarr", None), getattr(self, "plex", None),
+                     getattr(self, "radarr", None)):
             if stub:
                 stub.stop()
         shutil.rmtree(self.root, ignore_errors=True)

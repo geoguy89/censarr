@@ -860,7 +860,8 @@ def series():
     threading.Thread(target=_warm_posters,
                      args=(source, [s["id"] for s in items]),
                      daemon=True).start()
-    return {"items": items, "library_source": library.source_name(settings)}
+    return {"items": items, "library_source": library.source_name(settings),
+            "radarr": _radarr_set(settings)}
 
 
 def _attach_jobs(items: list[dict], known: dict[str, dict],
@@ -933,6 +934,7 @@ def home(limit: int = 12):
     counts = db.count_by_status()
     return {
         "library_source": library.source_name(settings),
+        "radarr": _radarr_set(settings),
         "episodes": episodes, "movies": films, "problems": problems,
         "stats": db.stats(), "monitors": len(db.monitors("sonarr")),
         "films_auto": watching.films_watched(),
@@ -951,19 +953,40 @@ def calendar(days: int = 21):
     something starts on Friday is the moment you decide it should arrive clean.
     """
     settings = config.load()
-    # Only Sonarr knows what has not aired yet - a media server can only see
-    # what it already has - so this is empty rather than wrong for the others.
-    if library.source_name(settings) != "sonarr":
-        return {"items": [], "days": days, "unavailable": True}
-    try:
-        items = arr.Sonarr(settings.sonarr.url,
-                           settings.sonarr.api_key).calendar(max(1, min(days, 90)))
-    except arr.ArrError as exc:
-        raise HTTPException(502, str(exc))
-    watched = {r["source_id"] for r in db.monitors("sonarr")}
-    for episode in items:
-        episode["monitored"] = str(episode["series_id"]) in watched
-    return {"items": items, "days": days}
+    days = max(1, min(days, 90))
+    # Only Sonarr and Radarr know what has not come out yet - a media server
+    # can only see what it already has - so with neither this is empty rather
+    # than wrong.
+    shows = library.source_name(settings) == "sonarr"
+    films = _radarr_set(settings)
+    if not shows and not films:
+        return {"items": [], "films": [], "days": days, "unavailable": True}
+    items, releases, problems = [], [], []
+    if shows:
+        try:
+            items = arr.Sonarr(settings.sonarr.url, settings.sonarr.api_key).calendar(days)
+        except arr.ArrError as exc:
+            problems.append(f"Sonarr: {exc}")
+        watched = {r["source_id"] for r in db.monitors("sonarr")}
+        for episode in items:
+            episode["monitored"] = str(episode["series_id"]) in watched
+    if films:
+        try:
+            releases = arr.Radarr(settings.radarr.url, settings.radarr.api_key).calendar(days)
+        except arr.ArrError as exc:
+            problems.append(f"Radarr: {exc}")
+        marked = {r["source_id"] for r in db.monitors("radarr")}
+        for film in releases:
+            film["marked"] = str(film["id"]) in marked
+            film["source"] = "radarr"
+    # One of two failing still shows the other; both failing is an error.
+    if problems and len(problems) == int(shows) + int(films):
+        raise HTTPException(502, "; ".join(problems))
+    return {"items": items, "films": releases, "days": days, "problems": problems}
+
+
+def _radarr_set(settings) -> bool:
+    return bool(settings.radarr.url and settings.radarr.api_key)
 
 
 @app.get("/api/series/{series_id}/episodes")
@@ -997,7 +1020,7 @@ def movies():
                      args=(source, [m["id"] for m in items]),
                      daemon=True).start()
     return {"items": items, "library_source": library.source_name(settings),
-            "auto": watching.films_watched()}
+            "radarr": _radarr_set(settings), "auto": watching.films_watched()}
 
 
 #  Artwork

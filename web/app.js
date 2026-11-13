@@ -176,15 +176,24 @@ const state = {
 
 try { state.libSource = localStorage.getItem('censarr.library_source') || localStorage.getItem('cleanarr.library_source') || 'sonarr'; } catch (e) { /* private window */ }
 if (state.libSource === 'arr') state.libSource = 'sonarr';   // Sonarr + Radarr, before Radarr was dropped
+try { state.hasRadarr = localStorage.getItem('censarr.radarr') === '1'; } catch (e) { /* private window */ }
 
 function noteSource(data) {
   let s = data && (data.library_source || data.source);
   if (s === 'arr') s = 'sonarr';
   if (!['sonarr', 'plex', 'jellyfin'].includes(s)) return;
   state.libSource = s;
-  try { localStorage.setItem('censarr.library_source', s); } catch (e) { /* ignore */ }
-  $('#nav-upcoming').hidden = s !== 'sonarr';
-  $('#more-upcoming').parentElement.hidden = s !== 'sonarr';
+  // A listing says so outright; the settings carry the Radarr address itself.
+  if (typeof data.radarr === 'boolean') state.hasRadarr = data.radarr;
+  else if (data.radarr && typeof data.radarr === 'object') state.hasRadarr = !!(data.radarr.url && data.radarr.api_key);
+  try {
+    localStorage.setItem('censarr.library_source', s);
+    localStorage.setItem('censarr.radarr', state.hasRadarr ? '1' : '');
+  } catch (e) { /* ignore */ }
+  // Upcoming has something to show with Sonarr's calendar or Radarr's.
+  const upcoming = s === 'sonarr' || !!state.hasRadarr;
+  $('#nav-upcoming').hidden = !upcoming;
+  $('#more-upcoming').parentElement.hidden = !upcoming;
 }
 
 const serverName = () => ({ plex: 'Plex', jellyfin: 'Jellyfin' }[state.settings?.media_server] || 'the media server');
@@ -891,7 +900,9 @@ ACTIONS['want-film'] = async (box) => {
   }
   const film = (state.wanted?.items || []).find((m) => String(m.id) === String(id));
   if (film) film.marked = on;
-  if ($('#movie-filter').value === 'wanted') renderMovies();
+  (state.calendar || []).forEach((e) => { if (e.kind === 'film' && String(e.id) === String(id)) e.marked = on; });
+  if (state.view === 'movies' && $('#movie-filter').value === 'wanted') renderMovies();
+  if (state.view === 'upcoming') renderCalendar();
 };
 
 function renderMovies() {
@@ -1422,16 +1433,19 @@ const airTime = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { ho
 const shortDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '');
 
 async function loadCalendar() {
-  if (!state.calendar) $('#calendar-list').innerHTML = loading('Asking Sonarr…', skeletonRows(5));
+  if (!state.calendar) $('#calendar-list').innerHTML = loading('Loading the calendar…', skeletonRows(5));
   try {
     const data = await api(`/api/calendar?days=${$('#calendar-days').value}`);
     if (data.unavailable) {
       state.calendar = [];
-      $('#calendar-list').innerHTML = empty({ icon: 'calendar', title: 'Only Sonarr has a calendar',
-        text: `${esc(sourceName('show'))} only knows what it already has. Use Sonarr as the library to see what is coming.` });
+      $('#calendar-list').innerHTML = empty({ icon: 'calendar', title: 'Nothing here knows what is coming',
+        text: `${esc(sourceName('show'))} only knows what it already has. Use Sonarr as the library, or add Radarr, to see what is coming.`,
+        actions: '<a class="btn secondary sm" href="#/settings/library">Open settings</a>' });
       return;
     }
-    state.calendar = data.items;
+    // Episodes and film releases in one list; a film is told apart by kind.
+    state.calendar = [...data.items, ...(data.films || []).map((f) => ({ ...f, kind: 'film' }))];
+    state.calendarProblems = data.problems || [];
   } catch (err) {
     if (err.status === 401) return;
     $('#calendar-list').innerHTML = problem('Could not load the calendar', err.message, 'reload-calendar');
@@ -1444,13 +1458,23 @@ ACTIONS['reload-calendar'] = () => { state.calendar = null; return loadCalendar(
 function renderCalendar() {
   if (!state.calendar) return;
   const filter = $('#calendar-filter').value;
+  const film = (e) => e.kind === 'film';
+  const set = (e) => (film(e) ? e.marked : e.monitored);
   const items = state.calendar.filter((e) => {
     if (filter === 'missing') return !e.has_file;
-    if (filter === 'monitored') return e.monitored;
-    if (filter === 'unmonitored') return !e.monitored;
+    if (filter === 'monitored') return set(e);
+    if (filter === 'unmonitored') return !set(e);
+    if (filter === 'episodes') return !film(e);
+    if (filter === 'films') return film(e);
     return true;
-  });
-  $('#calendar-count').textContent = plural(items.length, 'episode');
+  }).sort((a, b) => String(a.airs || '').slice(0, 10).localeCompare(String(b.airs || '').slice(0, 10))
+    || Number(film(a)) - Number(film(b)));
+  const films = items.filter(film).length;
+  $('#calendar-count').textContent = [items.length - films ? plural(items.length - films, 'episode') : '',
+    films ? plural(films, 'film') : ''].filter(Boolean).join(' · ') || 'Nothing';
+  const note = (state.calendarProblems || []).length
+    ? `<div class="alert warn">${icon('alert')}<div class="grow"><strong>Not everything answered</strong>${
+      state.calendarProblems.map((p) => `<div>${esc(p)}</div>`).join('')}</div></div>` : '';
   const days = [];
   const byDay = new Map();
   items.forEach((e) => {
@@ -1458,9 +1482,23 @@ function renderCalendar() {
     if (!byDay.has(key)) { byDay.set(key, []); days.push(key); }
     byDay.get(key).push(e);
   });
-  $('#calendar-list').innerHTML = days.length ? days.map((key) => `
+  const filmRow = (f) => `
+      <div class="row">
+        <img class="thumb" loading="lazy" decoding="async" alt="" src="${posterUrl(f, 'movie')}" onerror="this.classList.add('none')">
+        <div class="grow">
+          <div class="title">${esc(f.title)} <span class="muted">${esc([f.year, 'film'].filter(Boolean).join(' · '))}</span></div>
+          <div class="sub">${esc(f.release_kind[0].toUpperCase() + f.release_kind.slice(1))}</div>
+          ${f.has_file ? '<div class="sub good">Downloaded</div>' : ''}
+        </div>
+        <div class="actions">
+          ${f.has_file ? '' : `<label class="switch"><input type="checkbox" role="switch" data-change="want-film" data-id="${esc(f.id)}"
+            data-title="${esc(f.title)}" ${f.marked ? 'checked' : ''}>
+            <span class="track" aria-hidden="true"></span><span>Censor when it downloads<span class="sr-only">: ${esc(f.title)}</span></span></label>`}
+        </div>
+      </div>`;
+  $('#calendar-list').innerHTML = note + (days.length ? days.map((key) => `
     <h2 class="day-head">${esc(dayHeading(key))}</h2>
-    <div class="rows">${byDay.get(key).map((e) => `
+    <div class="rows">${byDay.get(key).map((e) => (film(e) ? filmRow(e) : `
       <div class="row">
         <img class="thumb" loading="lazy" decoding="async" alt="" src="${posterUrl(e, 'episode')}" onerror="this.classList.add('none')">
         <div class="grow">
@@ -1476,8 +1514,8 @@ function renderCalendar() {
             <span class="track" aria-hidden="true"></span><span>Censor new episodes<span class="sr-only"> of ${esc(e.series)}</span></span></label>
           <button type="button" class="btn ghost sm" data-action="open-show" data-id="${esc(e.series_id)}" data-title="${esc(e.series)}">Open</button>
         </div>
-      </div>`).join('')}</div>`).join('')
-    : empty({ icon: 'calendar', title: 'Nothing airing', text: 'Nothing in that window matches.' });
+      </div>`)).join('')}</div>`).join('')
+    : empty({ icon: 'calendar', title: 'Nothing coming', text: 'Nothing in that window matches.' }));
 }
 $('#calendar-days').addEventListener('change', () => { state.calendar = null; loadCalendar(); });
 $('#calendar-filter').addEventListener('change', renderCalendar);

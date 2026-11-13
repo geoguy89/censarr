@@ -215,6 +215,32 @@ def test_a_film_not_downloaded_yet_can_be_marked(desk):
     assert desk.errors == []
 
 
+def test_upcoming_lists_film_releases_beside_episodes(desk):
+    page = desk.go("upcoming")
+    row = page.locator("#calendar-list .row", has_text="Paper Lanterns")
+    row.wait_for()
+    assert "Digital release" in row.inner_text()
+    disk = page.locator("#calendar-list .row", has_text="Blue Hour")
+    assert "Downloaded" in disk.inner_text() and disk.get_by_role("switch").count() == 0
+    assert "2 films" in page.locator("#calendar-count").inner_text()
+    row.locator("label.switch").click()
+    page.locator(".toast", has_text="will be censored when it downloads").wait_for()
+    assert db.is_monitored("radarr", "902")
+    page.select_option("#calendar-filter", "films")
+    assert page.locator("#calendar-list .row").count() == 2
+    page.select_option("#calendar-filter", "monitored")
+    assert page.locator("#calendar-list .row", has_text="Paper Lanterns").count() == 1
+    # The same film on the Movies page shows the same choice.
+    movies = desk.go("movies")
+    movies.select_option("#movie-filter", "wanted")
+    film = movies.locator("#movie-grid .row", has_text="Paper Lanterns")
+    film.wait_for()
+    assert film.get_by_role("switch").is_checked()
+    film.locator("label.switch").click()
+    movies.locator(".toast", has_text="will not be censored").wait_for()
+    assert desk.errors == []
+
+
 def test_selecting_several_jobs(desk):
     page = desk.go("queue")
     boxes = page.locator("#job-list .pick")
@@ -325,7 +351,8 @@ def test_every_setting_saves_and_comes_back(desk, demo, tmp_path):
     assert page.locator("[name=recheck_url]").input_value() == "http://speaches.test:8000"
     assert page.locator("[data-tags=custom_words] .tag").all_inner_texts() == ["muppet"]
     assert page.locator("#save-bar").is_hidden()
-    assert page.locator("#nav-upcoming").is_hidden()      # Jellyfin has no calendar
+    # Jellyfin has no calendar, but Radarr is set, so Upcoming has its films.
+    assert page.locator("#nav-upcoming").is_visible()
     assert desk.errors == []
 
 
