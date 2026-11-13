@@ -1,7 +1,19 @@
-# cuDNN 9 is in the image on purpose: CTranslate2 (under faster-whisper) links
+# What the image is built on. The default carries CUDA for an NVIDIA GPU;
+# cuDNN 9 is in it on purpose: CTranslate2 (under faster-whisper) links
 # against it, and the plain CUDA runtime image fails at model load with an
 # error that names no library at all.
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+#
+# The CPU-only image (the -cpu tags) is this same file on plain Ubuntu:
+#
+#     docker build --build-arg BASE=ubuntu:22.04 -f docker/Dockerfile .
+#
+# CTranslate2 only loads the CUDA libraries when a GPU is asked for, so
+# without them Whisper runs on the CPU exactly as it does in the default image
+# on a machine with no GPU - and the image is a fraction of the size. Keep the
+# Ubuntu release the same as the CUDA base's, so both are the same Python and
+# the same ffmpeg.
+ARG BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM ${BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

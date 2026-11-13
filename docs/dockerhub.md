@@ -81,6 +81,10 @@ Home lists what is left to set up.
 > if you would rather pull from there. Docker Hub rate-limits anonymous pulls
 > to 100 per six hours per IP; GHCR does not.
 
+> **No NVIDIA GPU?** `geoguy89/censarr:latest-cpu` is the same build without
+> the CUDA libraries: about 1 GB unpacked, roughly a quarter of the default
+> image. Every tag has a `-cpu` twin.
+
 ---
 
 ## What it does

@@ -90,7 +90,7 @@ until you press Save. Each Test button tries what is typed, before it is saved.
 | **A library** | Plex or Jellyfin, optionally with Sonarr for shows. Only asked what exists — except that the subtitle search asks Plex or Jellyfin to attach subtitles it finds (see [The subtitles](#the-subtitles)). |
 | **Media** | Mounted so the paths your library reports exist in this container; see [Paths](#paths). |
 | **Subtitles** | Optional, and used when there: in the file, a `.srt` beside it, or found by Plex or Jellyfin. |
-| **GPU** | Optional. NVIDIA is much faster; CPU works. See [Hardware](#hardware). |
+| **GPU** | Optional. NVIDIA is much faster; CPU works, and has a smaller image of its own. See [Hardware](#hardware). |
 | **Disk** | ~1.5 GB for the speech model, plus ~90 MB per censored 25-minute episode. |
 | **Ollama** | Optional, off by default. See [Subtitles and Whisper](#subtitles-and-whisper). |
 
@@ -145,6 +145,13 @@ docker compose up -d
 > Also on Docker Hub as `geoguy89/censarr:latest`. GHCR is the better
 > default — Docker Hub rate-limits anonymous pulls.
 
+**With no NVIDIA GPU**, use the CPU-only image instead:
+`ghcr.io/geoguy89/censarr:latest-cpu`. It is the same build without the CUDA
+libraries — about 1 GB unpacked, roughly a quarter of the default image — and
+listens on the CPU exactly as the default image does on a machine with no GPU.
+Every tag has a `-cpu` twin. Moving between the two is only a change of tag:
+settings, history and the speech model are all in `/config`.
+
 ### docker run
 
 ```bash
@@ -173,11 +180,18 @@ template pulls from ghcr.io.
 
 ### Building it yourself
 
-The published image is `linux/amd64` only; its CUDA base has no arm64 build.
+The published images are `linux/amd64` only; the CUDA base has no arm64 build.
 
 ```bash
 git clone https://github.com/geoguy89/censarr.git
 cd censarr/docker && docker compose up -d --build
+```
+
+That builds the default image. For the CPU-only one, build the same file on
+plain Ubuntu, from the repository root:
+
+```bash
+docker build --build-arg BASE=ubuntu:22.04 -f docker/Dockerfile -t censarr:cpu .
 ```
 
 ### Hardware
@@ -187,7 +201,7 @@ Listening is the only demanding part.
 | | Speed |
 |---|---|
 | **NVIDIA GPU** | ~85 s for a 25-minute episode |
-| **CPU only** | Several times slower. Queue it overnight. |
+| **CPU only** | Several times slower. Queue it overnight. The `-cpu` image is all it needs. |
 | **AMD GPU** | Runs, but on the CPU — see below |
 
 Cens-arr picks GPU or CPU on its own. **Settings → Listening** shows which it

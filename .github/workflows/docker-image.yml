@@ -41,6 +41,20 @@ env:
 
 jobs:
   build:
+    # Two images from one Dockerfile. The default has CUDA for an NVIDIA GPU;
+    # the -cpu tags are the same build on plain Ubuntu, a fraction of the size,
+    # for a machine with no GPU.
+    name: Build (${{ matrix.variant }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: gpu
+            base: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+            suffix: ""
+          - variant: cpu
+            base: ubuntu:22.04
+            suffix: "-cpu"
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,12 +107,19 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/cleanarr
             name=docker.io/${{ env.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }},enable=${{ steps.dockerhub.outcome == 'success' }}
             name=docker.io/${{ env.DOCKERHUB_USERNAME }}/cleanarr,enable=${{ steps.dockerhub.outcome == 'success' }}
+          # Every tag is written out with this variant's suffix, and nothing
+          # is left to be added automatically: an automatic "latest" carries
+          # no suffix, so the CPU build would overwrite the GPU image's.
+          # "latest" moves with the default branch and with a version tag
+          # that is not a pre-release.
+          flavor: |
+            latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
+            type=raw,value=latest,suffix=${{ matrix.suffix }},enable={{is_default_branch}}
+            type=raw,value=latest,suffix=${{ matrix.suffix }},enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=semver,pattern={{version}},suffix=${{ matrix.suffix }}
+            type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.suffix }}
+            type=sha,format=short,suffix=${{ matrix.suffix }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -107,10 +128,13 @@ jobs:
           # server/ and web/.
           context: .
           file: docker/Dockerfile
+          build-args: |
+            BASE=${{ matrix.base }}
           # amd64 only: the base image is nvidia/cuda, which has no arm64 build.
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # One cache per variant, or each build would evict the other's.
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}

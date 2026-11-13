@@ -34,7 +34,9 @@
     and the censored one is picked from the audio menu in Plex or Jellyfin.
 
     Runs on the CPU as it comes. With an NVIDIA GPU and the Nvidia Driver
-    plugin, add --runtime=nvidia to Extra Parameters (Advanced View).
+    plugin, add --runtime=nvidia to Extra Parameters (Advanced View). With no
+    NVIDIA GPU, change Repository to ghcr.io/geoguy89/censarr:latest-cpu for a
+    much smaller download.
   </Overview>
   <Category>MediaApp:Video Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8477]/</WebUI>
