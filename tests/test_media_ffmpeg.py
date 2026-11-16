@@ -300,3 +300,35 @@ def test_a_track_marked_by_the_old_name_is_still_ours(tmp_path):
                     "-metadata:s:a:1", "cleanarr=1", str(out)], check=True)
     p = media.probe(out)
     assert p.audio[1].written_here and not p.audio[0].written_here
+
+
+def test_censored_subtitles_are_added_ours_and_removed_again(source, tmp_path):
+    """The masked subtitles go in beside the censored audio, carry the same
+    name, are never read back as the subtitles to check against, and go
+    again when the censored track is removed."""
+    masked = tmp_path / "censored.srt"
+    masked.write_text("1\n00:00:01,000 --> 00:00:02,000\nWhat the ****\n\n", encoding="utf8")
+    original = media.probe(source)
+    track = media.pick_source_track(original)
+    out = source.with_name(f"subs{source.suffix}")
+    media.build_cleaned_file(original, track, [(1.0, 2.0)], out, subtitles=masked)
+    got = media.verify_replacement(original, out,
+                                   expected_subtitles=len(original.subtitles) + 1)
+    assert got.our_subtitles == (len(original.subtitles),)
+    ours = got.subtitles[-1]
+    assert ours.is_text and ours.language == "eng"
+    picked = media.pick_subtitles(got)
+    assert picked is None or picked.sub_index != ours.sub_index
+
+    # Censoring again replaces it rather than adding a second.
+    again = source.with_name(f"again{source.suffix}")
+    media.build_cleaned_file(got, media.pick_source_track(got), [(3.0, 4.0)], again,
+                             drop_audio=(got.cleaned_track.audio_index,),
+                             subtitles=masked, drop_subtitles=got.our_subtitles)
+    assert len(media.probe(again).our_subtitles) == 1
+
+    back = source.with_name(f"back{source.suffix}")
+    media.remove_cleaned_track(got, back, drop_subtitles=got.our_subtitles)
+    gone = media.verify_replacement(got, back, expected_audio=1, expect_cleaned=False,
+                                    expected_subtitles=len(original.subtitles))
+    assert gone.our_subtitles == ()

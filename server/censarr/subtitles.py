@@ -971,3 +971,72 @@ def _place(tokens, n, window) -> tuple[float, float, str] | None:
     if not PLACE_MIN <= end - start <= PLACE_MAX:
         return None
     return start, end, between
+
+
+# ---------------------------------------------------------------------------
+#  A censored copy of the subtitles
+# ---------------------------------------------------------------------------
+#  Turning on subtitles to follow a thick accent used to put every swear the
+#  audio track silenced back on screen. So the subtitles the words were
+#  checked against - already lined up with the dialogue - are written out
+#  again with the swears masked, as a track beside the censored audio.
+#
+#  A word is masked when the household's word lists catch it in the line,
+#  unless the audio side heard that word at that moment and deliberately left
+#  it in (a reverent "God", a word marked wrong by hand). Words the audio side
+#  muted are masked too even where the lists alone would not catch them - a
+#  word muted by hand, say.
+
+MASK_SLACK = 1.0       # seconds either side of a line that still count as it
+_TOKEN = re.compile(r"\S+")
+_LETTERS = re.compile(r"[^\W_]")
+
+
+def _mask(token: str) -> str:
+    return _LETTERS.sub("*", token)
+
+
+def censor(cues: list[Cue], muted: list[words.Match], kept: list[words.Match],
+           matcher: words.Matcher) -> list[Cue]:
+    """The cues with the swears masked."""
+    tokens: list[list[str]] = [_TOKEN.findall(c.text) for c in cues]
+    heard, where = [], {}
+    for ci, (cue, row) in enumerate(zip(cues, tokens)):
+        for ti, tok in enumerate(row):
+            at = round(cue.start + ti * 1e-4, 4)
+            where[at] = (ci, ti)
+            heard.append({"word": tok, "start": at, "end": at})
+    hide = {where[m.start] for m in matcher.find(heard) if m.start in where}
+
+    def near(cue: Cue, ms: list[words.Match]) -> list[str]:
+        return [words.normalize(m.text) for m in ms
+                if cue.start - MASK_SLACK <= m.start <= cue.end + MASK_SLACK]
+
+    out = []
+    for ci, (cue, row) in enumerate(zip(cues, tokens)):
+        said, spared = near(cue, muted), near(cue, kept)
+        for ti, tok in enumerate(row):
+            this = (ci, ti)
+            if this in hide:
+                # Left in on purpose, and not also muted here: leave it shown.
+                if (any(_is_word(tok, w, matcher) for w in spared)
+                        and not any(_is_word(tok, w, matcher) for w in said)):
+                    hide.discard(this)
+            elif any(w and _is_word(tok, w, matcher) for w in said):
+                hide.add(this)
+        masked = [(_mask(tok) if (ci, ti) in hide else tok) for ti, tok in enumerate(row)]
+        out.append(Cue(cue.start, cue.end, " ".join(masked)))
+    return out
+
+
+def _stamp(seconds: float) -> str:
+    ms = max(0, int(round(seconds * 1000)))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def to_srt(cues: list[Cue]) -> str:
+    return "".join(f"{n}\n{_stamp(c.start)} --> {_stamp(c.end)}\n{c.text}\n\n"
+                   for n, c in enumerate(cues, 1) if c.text.strip() and c.end > c.start)

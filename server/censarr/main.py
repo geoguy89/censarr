@@ -613,7 +613,7 @@ def put_settings(payload: dict):
                     continue
                 setattr(current, key, value)
     for key in ("categories", "custom_words", "allow_words", "pad_start", "pad_end",
-                "fade", "model", "device", "compute_type", "trim_silence", "keep_backup",
+                "fade", "model", "device", "compute_type", "trim_silence", "keep_backup", "subtitle_track",
                 "asr_backend", "asr_url", "asr_remote_model",
                 "track_title", "plex_url", "judge_url", "judge_model",
                 "media_server", "jellyfin_url", "library_source",

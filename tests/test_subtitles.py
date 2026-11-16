@@ -534,3 +534,40 @@ def test_a_caption_that_cuts_or_runs_on_the_swear_is_a_softening(shown):
 def test_a_homophone_is_not_cut_short():
     """"dam" sounds exactly like "damn": a mishearing, not a cut."""
     assert not subtitles._softens("dam", "damn", words.Matcher(context_words=frozenset()))
+
+
+# -- the censored copy -------------------------------------------------------
+
+def _match(text, start):
+    return words.Match(start=start, end=start + 0.3, text=text, category="strong")
+
+
+def test_censored_copy_masks_the_swears():
+    cues = [subtitles.Cue(1.0, 2.5, "What the fuck is that, shit!"),
+            subtitles.Cue(3.0, 4.0, "Pass the caulk.")]
+    got = subtitles.censor(cues, [_match("fuck", 1.4)], [], words.Matcher())
+    assert got[0].text == "What the **** is that, ****!"
+    assert got[1].text == "Pass the caulk."
+    assert (got[0].start, got[0].end) == (1.0, 2.5)
+
+
+def test_a_word_left_in_on_purpose_stays_shown():
+    """A reverent "God" the audio kept is not masked on screen either."""
+    cues = [subtitles.Cue(5.0, 7.0, "Thank God you're safe.")]
+    kept = [words.Match(start=5.6, end=5.9, text="God", category="blasphemy",
+                        reason="left in: reverent, not an exclamation")]
+    got = subtitles.censor(cues, [], kept, words.Matcher(context_words=frozenset({"god"})))
+    assert got[0].text == "Thank God you're safe."
+
+
+def test_a_word_muted_by_hand_is_masked_too():
+    cues = [subtitles.Cue(1.0, 2.0, "You muppet.")]
+    got = subtitles.censor(cues, [_match("muppet", 1.3)], [], words.Matcher())
+    assert got[0].text == "You ******."
+
+
+def test_censored_copy_writes_back_as_srt():
+    cues = [subtitles.Cue(3661.25, 3662.5, "**** off")]
+    text = subtitles.to_srt(cues)
+    assert "01:01:01,250 --> 01:01:02,500" in text
+    assert subtitles.parse_srt(text)[0].text == "**** off"

@@ -45,7 +45,7 @@ INTEGERS = {
 }
 
 WORD_LISTS = ("custom_words", "allow_words", "check_in_context")
-BOOLEANS = ("keep_backup", "trim_silence")
+BOOLEANS = ("keep_backup", "trim_silence", "subtitle_track")
 
 _BITRATE = re.compile(r"^\d+(\.\d+)?[km]?$", re.I)
 _KEEP_ALIVE = re.compile(r"^-?\d+(\.\d+)?(ms|s|m|h)?$")

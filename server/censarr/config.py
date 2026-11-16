@@ -125,6 +125,9 @@ class Settings:
 
     # Files
     keep_backup: bool = False
+    # Also add a subtitle track with the swears masked, made from the
+    # subtitles the words were checked against. Named like the audio track.
+    subtitle_track: bool = True
     # What the added track is called. Changing it names the tracks written
     # from then on; the ones already written keep the name they were given.
     track_title: str = "Censored - English"

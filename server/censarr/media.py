@@ -131,6 +131,17 @@ class SubtitleStream:
     language: str
     title: str
     forced: bool
+    handler: str = ""
+    mark: str = ""
+
+    @property
+    def written_here(self) -> bool:
+        """The censored subtitles this install added - by the mark, or by the
+        handler name only this writes (MP4 keeps no other tag)."""
+        if self.mark:
+            return True
+        handler = self.handler.strip().lower()
+        return bool(handler) and handler in KNOWN_TITLES
 
     @property
     def is_text(self) -> bool:
@@ -157,6 +168,11 @@ class Probe:
     def cleaned_track(self) -> AudioStream | None:
         return next((a for a in self.audio if a.is_cleaned), None)
 
+    @property
+    def our_subtitles(self) -> tuple[int, ...]:
+        """The censored subtitle tracks this install added (s:N indexes)."""
+        return tuple(s.sub_index for s in self.subtitles if s.written_here)
+
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
@@ -182,6 +198,8 @@ def probe(path: str | Path) -> Probe:
                 language=str(tags.get("language", "")),
                 title=str(tags.get("title", "")),
                 forced=bool((s.get("disposition") or {}).get("forced")),
+                handler=str(tags.get("handler_name", "")),
+                mark=str(tags.get(MARK_KEY) or ""),
             ))
             continue
         if s.get("codec_type") != "audio":
@@ -273,7 +291,8 @@ def pick_subtitles(p: Probe, prefer_language: str = "eng") -> SubtitleStream | N
         # Commentary is somebody else talking; signs and songs, like forced
         # subtitles, cover only a few lines.
         extra = any(w in s.title.lower() for w in ("commentary", "signs", "songs"))
-        return (s.is_text and not s.is_forced and not extra
+        return (s.is_text and not s.is_forced and not extra and not s.written_here
+                and s.title.strip().lower() not in KNOWN_TITLES
                 and (lang.startswith(prefer_language[:2]) or lang in ("", "und")))
 
     tagged = [s for s in p.subtitles if usable(s) and s.language]
@@ -406,6 +425,7 @@ def build_cleaned_file(original: Probe, track: AudioStream,
                        title: str = "", language: str = "eng",
                        fade: float = 0.02, drop_audio: tuple[int, ...] = (),
                        surround_bitrate: str = "384k", stereo_bitrate: str = "192k",
+                       subtitles: Path | None = None, drop_subtitles: tuple[int, ...] = (),
                        progress=None) -> Path:
     """Silence the words and write the finished file in one pass.
 
@@ -418,14 +438,23 @@ def build_cleaned_file(original: Probe, track: AudioStream,
                                 surround_bitrate, stereo_bitrate)
     title = title or CLEAN_TITLE
     new_index = len(original.audio) - len(drop_audio)
+    sub_codec = SUBTITLE_CODECS.get(original.container) if subtitles else None
 
     cmd = [FFMPEG, "-nostdin", "-v", "error", "-y", *_threads(),
-           "-i", str(original.path),
-           "-filter_complex_script", str(_filter_script(spans, track, fade)),
-           "-map", "0"]
+           "-i", str(original.path)]
+    if sub_codec:
+        cmd += ["-i", str(subtitles)]
+    cmd += ["-filter_complex_script", str(_filter_script(spans, track, fade)),
+            "-map", "0"]
     for index in drop_audio:
         cmd += ["-map", f"-0:a:{index}"]
-    cmd += ["-map", "[clean]", "-c", "copy",
+    for index in drop_subtitles:
+        cmd += ["-map", f"-0:s:{index}"]
+    cmd += ["-map", "[clean]"]
+    if sub_codec:
+        new_sub = len(original.subtitles) - len(drop_subtitles)
+        cmd += ["-map", "1:s:0"]
+    cmd += ["-c", "copy",
             # Only the new stream is encoded; everything else is copied.
             f"-c:a:{new_index}", args[1], f"-b:a:{new_index}", args[3],
             f"-metadata:s:a:{new_index}", f"title={title}",
@@ -435,7 +464,17 @@ def build_cleaned_file(original: Probe, track: AudioStream,
             # Kept by Matroska, ignored by MP4: the track stays ours even if
             # the name is changed later.
             f"-metadata:s:a:{new_index}", f"{MARK_KEY}={MARK_VALUE}",
-            f"-disposition:a:{new_index}", "0",
+            f"-disposition:a:{new_index}", "0"]
+    if sub_codec:
+        # The same name and marks as the audio, so a player lists the pair
+        # together and removal can tell it was written here.
+        cmd += [f"-c:s:{new_sub}", sub_codec,
+                f"-metadata:s:s:{new_sub}", f"title={title}",
+                f"-metadata:s:s:{new_sub}", f"handler_name={title}",
+                f"-metadata:s:s:{new_sub}", f"language={language}",
+                f"-metadata:s:s:{new_sub}", f"{MARK_KEY}={MARK_VALUE}",
+                f"-disposition:s:{new_sub}", "0"]
+    cmd += [
             # Interleave strictly. Left to itself ffmpeg gives up on ordering
             # after max_interleave_delta (10s) when a file has sparse streams -
             # one episode with 38 subtitle tracks ended up with its cleaned
@@ -456,6 +495,16 @@ def build_cleaned_file(original: Probe, track: AudioStream,
     finally:
         Path(script).unlink(missing_ok=True)
     return dest
+
+
+# What a censored subtitle track is written as, per container. Others (AVI,
+# TS) get the audio track only.
+SUBTITLE_CODECS = {"mkv": "srt", "mka": "srt", "mp4": "mov_text", "m4v": "mov_text",
+                   "mov": "mov_text"}
+
+
+def adds_subtitles(container: str) -> bool:
+    return container in SUBTITLE_CODECS
 
 
 def _filter_script(spans: list[tuple[float, float]], track: AudioStream,
@@ -543,7 +592,8 @@ def check_interleave(path: Path, cleaned_index: int, duration: float,
 
 def verify_replacement(original: Probe, candidate: Path,
                        expected_audio: int | None = None,
-                       expect_cleaned: bool = True) -> Probe:
+                       expect_cleaned: bool = True,
+                       expected_subtitles: int | None = None) -> Probe:
     """Refuse a file that lost anything on the way through.
 
     `expect_cleaned` is False for a removal, where the new file is meant to
@@ -558,6 +608,10 @@ def verify_replacement(original: Probe, candidate: Path,
     if len(got.audio) != expected:
         raise MediaError(
             f"the new file has {len(got.audio)} audio tracks, expected {expected}")
+    if expected_subtitles is not None and len(got.subtitles) != expected_subtitles:
+        raise MediaError(
+            f"the new file has {len(got.subtitles)} subtitle tracks, "
+            f"expected {expected_subtitles}")
     if expect_cleaned and got.cleaned_track is None:
         raise MediaError(
             f"the new file has no track named “{CLEAN_TITLE}”")
@@ -574,7 +628,7 @@ def verify_replacement(original: Probe, candidate: Path,
 
 
 def remove_cleaned_track(original: Probe, dest: Path, drop=None,
-                         progress=None) -> int:
+                         progress=None, drop_subtitles: tuple[int, ...] = ()) -> int:
     """Write the file back without its cleaned track. Returns how many it dropped.
 
     `drop` names the audio streams to leave out; by default every track that
@@ -588,6 +642,8 @@ def remove_cleaned_track(original: Probe, dest: Path, drop=None,
            "-i", str(original.path), "-map", "0"]
     for index in drop:
         cmd += ["-map", f"-0:a:{index}"]
+    for index in drop_subtitles:
+        cmd += ["-map", f"-0:s:{index}"]
     # After the inputs: -max_interleave_delta is a muxer option (see
     # build_cleaned_file).
     cmd += ["-c", "copy", "-max_interleave_delta", "0",

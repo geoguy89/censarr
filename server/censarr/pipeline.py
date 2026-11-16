@@ -268,14 +268,16 @@ class Pipeline:
         try:
             self._stage(job_id, "remuxing", "removing the censored track")
             candidate = work / f"remux{path.suffix}"
+            subs = original.our_subtitles
             dropped = media.remove_cleaned_track(
-                original, candidate, drop=drop,
+                original, candidate, drop=drop, drop_subtitles=subs,
                 progress=self._progress(job_id, "remuxing"))
 
             self._stage(job_id, "verifying", "checking the new file")
             media.verify_replacement(
                 original, candidate, expected_audio=len(original.audio) - dropped,
-                expect_cleaned=False)
+                expect_cleaned=False,
+                expected_subtitles=len(original.subtitles) - len(subs))
             media.swap_in(candidate, path, keep_backup=settings.keep_backup)
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -453,18 +455,33 @@ class Pipeline:
 
             self._stage(job_id, "muting",
                         f"muting {len(matches)} word{'s' if len(matches) != 1 else ''}")
+            # The censored subtitles: the lines the words were checked
+            # against, lined up, with the swears masked. A censor again
+            # replaces the ones written last time.
+            old_subs = original.our_subtitles if existing else ()
+            masked_srt = None
+            if (getattr(settings, "subtitle_track", True) and cues
+                    and media.adds_subtitles(original.container)):
+                masked_srt = work / "censored.srt"
+                masked_srt.write_text(
+                    subtitles.to_srt(subtitles.censor(cues, matches, kept, matcher)),
+                    encoding="utf8")
+                sub_note += " · censored subtitles added"
             candidate = work / f"remux{path.suffix}"
             media.build_cleaned_file(
                 original, source, spans, candidate, title=settings.track_title,
                 fade=settings.fade, drop_audio=existing,
                 surround_bitrate=settings.bitrate_surround,
                 stereo_bitrate=settings.bitrate_stereo,
+                subtitles=masked_srt, drop_subtitles=old_subs,
                 progress=self._progress(job_id, "muting"))
 
             self._stage(job_id, "verifying", "checking the new file")
             checked = media.verify_replacement(
                 original, candidate,
-                expected_audio=len(original.audio) + 1 - len(existing))
+                expected_audio=len(original.audio) + 1 - len(existing),
+                expected_subtitles=(len(original.subtitles) - len(old_subs)
+                                    + (1 if masked_srt else 0)))
             new_track = checked.cleaned_track
             added = (media.track_bytes(candidate, new_track.audio_index)
                      if new_track else 0)
@@ -530,7 +547,7 @@ def _sweep_stale_work(folder: Path, older_than: float = 6 * 3600) -> None:
 
 # What a run writes into its scratch directory: the audio Whisper hears, the
 # subtitles pulled out of the file or another copy, and the remux being built.
-SCRATCH_FILES = {"asr.wav", "subtitles.srt", "other-copy.srt"}
+SCRATCH_FILES = {"asr.wav", "subtitles.srt", "other-copy.srt", "censored.srt"}
 
 
 def _only_scratch(folder: Path) -> bool:

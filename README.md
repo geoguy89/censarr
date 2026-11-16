@@ -544,6 +544,21 @@ says which it used — *subtitles from another copy (Film WEBDL-1080p.mkv)*,
 *subtitles from a Plex search (…)* — or *no subtitles found to check against*,
 and a copy of borrowed subtitles is kept in `/config/cache/subtitles/`.
 
+### Censored subtitles
+
+Turning subtitles on to follow a thick accent would put every muted swear back
+on screen, so Cens-arr also adds a subtitle track named like the audio one
+(*Censored - English*). It is the same subtitles the words were checked
+against — the file's own, a Bazarr `.srt` beside it, or your media server's —
+lined up with the dialogue, with each swear masked: `What the **** is that?`
+
+A word the audio leaves in on purpose (a reverent "God", one you marked wrong)
+stays shown; one you marked to mute is masked even if the word lists would not
+catch it. Censoring a file again replaces the track; removing the censored
+audio removes it too. MKV and MP4 only. Switch it off under **Settings →
+Files → Add censored subtitles too**. Styling (italics, positions) is not
+kept.
+
 ### A second opinion on a sound-alike
 
 Optional. Before a sound-alike is left in, **Settings → Second opinion** can

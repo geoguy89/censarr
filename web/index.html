@@ -706,6 +706,13 @@
                   <p class="error-text" data-error-for="judge_keep_alive"></p></div>
               </div>
               <div class="field"><label class="switch">
+                <input type="checkbox" name="subtitle_track" role="switch">
+                <span class="track" aria-hidden="true"></span>
+                <span>Add censored subtitles too</span></label>
+                <p class="hint">A subtitle track named like the censored audio, with the
+                  muted words masked. Made from the file's own subtitles, a Bazarr
+                  <code>.srt</code> beside it, or your media server's.</p></div>
+              <div class="field"><label class="switch">
                 <input type="checkbox" name="keep_backup" role="switch">
                 <span class="track" aria-hidden="true"></span>
                 <span>Keep a copy of each original</span></label>

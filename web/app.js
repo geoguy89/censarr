@@ -1967,6 +1967,7 @@ function collect() {
     ffmpeg_threads: F('ffmpeg_threads').value, compute_type: F('compute_type').value,
     judge_keep_alive: F('judge_keep_alive').value.trim(),
     keep_backup: F('keep_backup').checked,
+    subtitle_track: F('subtitle_track').checked,
   };
 }
 
@@ -2044,6 +2045,7 @@ function fillSettings(s) {
   set('ffmpeg_threads', s.ffmpeg_threads); set('compute_type', s.compute_type || 'auto');
   set('judge_keep_alive', s.judge_keep_alive);
   F('keep_backup').checked = !!s.keep_backup;
+  F('subtitle_track').checked = s.subtitle_track !== false;
 
   $('#categories').innerHTML = '<legend class="sr-only">Word lists</legend>' + s.available_categories.map((c) => `
     <label class="toggle"><span class="grow">${esc(c.label)}<span>${c.count} words and phrases</span></span>
