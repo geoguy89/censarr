@@ -139,3 +139,58 @@ def test_fingerprint_changes_with_content(tmp_path):
     b.write_bytes(a.read_bytes()[:-2] + b"\x01\x00")
     assert asr.audio_fingerprint(a) != asr.audio_fingerprint(b)
     assert json.dumps(asr.audio_fingerprint(a))
+
+
+class _PieceModel:
+    """Stands in for WhisperModel: one word half a second into each piece."""
+
+    def __init__(self):
+        self.lengths = []
+
+    def transcribe(self, samples, **_options):
+        from types import SimpleNamespace
+        self.lengths.append(len(samples))
+        word = SimpleNamespace(word=" w", start=0.5, end=0.9, probability=0.9)
+        segment = SimpleNamespace(end=0.9, words=[word])
+        return iter([segment]), SimpleNamespace(language="en",
+                                                duration=len(samples) / 16000)
+
+
+def test_long_audio_is_heard_in_pieces_cut_at_a_gap(monkeypatch, tmp_path):
+    """Whisper is handed a long recording a piece at a time, so its memory does
+    not grow with the length of the film, and each cut falls in a quiet spot."""
+    np = pytest.importorskip("numpy")
+    rate = 16000
+    t = np.arange(rate * 25)
+    samples = (np.sin(t / 5) * 8000).astype(np.int16)
+    samples[int(8.5 * rate):int(9.0 * rate)] = 0          # the gap to cut at
+    frames = samples.tobytes()
+    audio = tmp_path / "long.wav"
+    audio.write_bytes(b"RIFF" + struct.pack("<I", 36 + len(frames)) + b"WAVEfmt "
+                      + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+                      + b"data" + struct.pack("<I", len(frames)) + frames)
+    model = _PieceModel()
+    monkeypatch.setattr(asr, "_load_with_patience", lambda *a, **k: model)
+    monkeypatch.setattr(asr, "PIECE_SECONDS", 10)
+    monkeypatch.setattr(asr, "SEAM_SEARCH_SECONDS", 3.0)
+    seen = []
+
+    got = asr.transcribe(audio, progress=seen.append)
+
+    assert len(model.lengths) == 3
+    assert sum(model.lengths) == len(samples)           # nothing lost or heard twice
+    assert 8.5 <= model.lengths[0] / rate <= 9.0        # cut inside the gap
+    starts = [w["start"] for w in got.words]
+    assert starts[0] == 0.5
+    assert starts[1] == pytest.approx(model.lengths[0] / rate + 0.5, abs=0.001)
+    assert got.duration == 25.0
+    assert seen == sorted(seen) and seen[-1] <= 1.0
+
+
+def test_a_short_file_is_one_piece(monkeypatch, tmp_path):
+    pytest.importorskip("numpy")
+    model = _PieceModel()
+    monkeypatch.setattr(asr, "_load_with_patience", lambda *a, **k: model)
+    got = asr.transcribe(wav(tmp_path / "short.wav", seconds=2))
+    assert model.lengths == [32000]
+    assert got.words[0]["start"] == 0.5

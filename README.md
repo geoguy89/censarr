@@ -204,6 +204,9 @@ Listening is the only demanding part.
 | **CPU only** | Several times slower. Queue it overnight. The `-cpu` image is all it needs. |
 | **AMD GPU** | Runs, but on the CPU — see below |
 
+Memory use does not grow with the length of the file: Whisper hears a film
+ten minutes at a time.
+
 Cens-arr picks GPU or CPU on its own. **Settings → Listening** shows which it
 found and lets you force either.
 
@@ -586,6 +589,15 @@ new file name counts as new, so an upgrade is censored again.
 If more than 50 films appear at once — a library renamed, remounted or
 imported whole — none are queued, and the Queue page says so. Censor those
 from the Movies page.
+
+### The whole library
+
+**Movies → Censor every film on disk** and **Shows → Censor every episode on
+disk** queue everything not censored yet, behind whatever is already waiting.
+Each file gains a second audio track (a few hundred MB for a film), so before
+anything is queued Cens-arr says how many files that is and roughly how much
+space they will take, going by the files it has censored so far. Files that
+failed are left out; retry those from the Queue page.
 
 ### Films not downloaded yet
 

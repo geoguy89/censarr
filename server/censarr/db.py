@@ -604,6 +604,24 @@ def job_paths() -> dict[str, str]:
     return out
 
 
+def job_kinds() -> dict[str, str]:
+    """The kind (episode, movie, file) of the job each path last had."""
+    rows = connect().execute("SELECT path, kind FROM job ORDER BY id").fetchall()
+    return {r["path"]: r["kind"] for r in rows}
+
+
+def typical_job(kind: str) -> dict:
+    """What a finished clean of this kind usually costs: how many there have
+    been, the bytes its track added, and the seconds it took."""
+    row = connect().execute(
+        "SELECT COUNT(*) AS n, AVG(added_bytes) AS bytes,"
+        " AVG(finished_at - started_at) AS seconds FROM job"
+        f" WHERE status='done' AND kind=? AND id IN ({_LATEST_CLEAN})",
+        (kind,)).fetchone()
+    return {"n": row["n"] or 0, "bytes": float(row["bytes"] or 0),
+            "seconds": float(row["seconds"] or 0)}
+
+
 def job_titles() -> dict[str, list[tuple[str, str]]]:
     """{show title: [(path, latest status)]}, for a library that reports no
     show folder to match on."""

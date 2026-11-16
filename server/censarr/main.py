@@ -1222,6 +1222,45 @@ def check_monitors():
             "checked_at": worker.last_monitor_check}
 
 
+@app.get("/api/library/backlog")
+def library_backlog(kind: str = "shows"):
+    """What "Censor every film / show" would queue, and what it would cost
+    in disk space, so the question can say so before anything is queued."""
+    kind = "movies" if kind == "movies" else "shows"
+    try:
+        return watching.library_backlog(kind)
+    except (arr.ArrError, library.LibraryError) as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/library/censor-all")
+def censor_library(payload: dict):
+    """Queue everything of one kind on disk that is not censored yet, behind
+    what is already waiting. Episodes are gathered show by show, which takes a
+    while on a large library, so that happens on a thread."""
+    kind = "movies" if payload.get("kind") == "movies" else "shows"
+    if watching.backlog_state["running"]:
+        raise HTTPException(409, "already queueing the library - give it a minute")
+
+    def run() -> None:
+        watching.queue_library(kind)
+        worker.nudge()
+
+    if kind == "movies":
+        run()
+        state = dict(watching.backlog_state)
+        if state["error"]:
+            raise HTTPException(502, state["error"])
+        return {"queued": state["queued"], "running": False}
+    threading.Thread(target=run, name="censarr-backlog", daemon=True).start()
+    return {"queued": 0, "running": True}
+
+
+@app.get("/api/library/censor-all")
+def censor_library_state():
+    return dict(watching.backlog_state)
+
+
 @app.post("/api/webhook/sonarr")
 async def sonarr_webhook(request: Request):
     """Optional: Sonarr tells us the moment an episode is imported.

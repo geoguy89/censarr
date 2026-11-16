@@ -1196,6 +1196,49 @@ ACTIONS['watch-films'] = async (box) => {
   }
 };
 
+/* Everything on disk at once: every film, or every episode of every show.
+   Asked first, with what it will cost in disk space, since each file gains a
+   second audio track. */
+ACTIONS['censor-all'] = async (el) => {
+  const kind = el.dataset.kind === 'movies' ? 'movies' : 'shows';
+  const [one, many] = kind === 'movies' ? ['film', 'films'] : ['episode', 'episodes'];
+  setBusy(el, true);
+  let est;
+  try {
+    est = await api(`/api/library/backlog?kind=${kind}`);
+  } finally {
+    setBusy(el, false);
+  }
+  if (!est.count) { toast(`Every ${one} on disk is censored or queued already`); return; }
+  const count = `${est.exact ? '' : 'about '}${plural(est.count, one, many)}`;
+  const hours = est.seconds / 3600;
+  const answer = await ask(`Censor ${count}?`,
+    `Every ${one} on disk that is not censored yet goes in the queue, behind anything already waiting. `
+    + `Each one gains a second audio track, so this adds roughly ${size(est.bytes)} to your library `
+    + `(about ${size(est.per_file)} a ${one}${est.from_history ? ', going by the ones censored here so far' : ''}). `
+    + `Check your disks have that room to spare. `
+    + (hours >= 1 ? `Expect around ${Math.round(hours)} hours of work. ` : '')
+    + `Removing the censored tracks later gives the space back.`,
+    [{ label: 'Queue them all', value: 'yes', primary: true }], { danger: true });
+  if (answer !== 'yes') return;
+  setBusy(el, true);
+  try {
+    let result = await api('/api/library/censor-all', { method: 'POST', body: { kind } });
+    if (result.running) {
+      toast(`Queueing ${many} show by show…`);
+      do {
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await api('/api/library/censor-all');
+      } while (result.running);
+      if (result.error) throw new ApiError(result.error);
+    }
+    toast(result.queued ? `Queued ${plural(result.queued, one, many)}` : `Nothing new to queue`);
+  } finally {
+    setBusy(el, false);
+  }
+  if (kind === 'movies') { state.movies = null; loadMovies(); } else { state.shows = null; loadShows(); }
+};
+
 /* ---------------------------------------------------------------- a film */
 
 ACTIONS['open-wanted'] = (el) => {

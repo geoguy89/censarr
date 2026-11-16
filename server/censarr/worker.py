@@ -64,6 +64,112 @@ def enqueue_film(title: str, year, path: str, source: str, source_id) -> int | N
                       source_id=str(source_id or ""), front=True)
 
 
+# -- the whole library at once ------------------------------------------------
+#  "Censor every film" / "Censor every show": everything on disk now that has
+#  never been censored, queued behind whatever is already waiting. A file
+#  whose job failed or was censored already is left out; a cancelled one is
+#  offered again, since asking for everything is asking for it too.
+
+SETTLED = ("done", "skipped", "queued", "running", "failed")
+# Used for the estimate until this install has finished a job of that kind.
+TYPICAL_MINUTES = {"movie": 120, "episode": 45}
+_backlog_lock = threading.Lock()
+backlog_state = {"kind": "", "queued": 0, "running": False, "error": ""}
+
+
+def _bitrate(value: str) -> float:
+    """"384k" -> 384000 bits a second."""
+    text = str(value or "").strip().lower()
+    scale = 1000 if text.endswith("k") else 1_000_000 if text.endswith("m") else 1
+    try:
+        return float(text.rstrip("km") or 0) * scale
+    except ValueError:
+        return 384000.0
+
+
+def library_backlog(kind: str, settings=None) -> dict:
+    """How much "censor everything" would queue, and roughly what it costs.
+
+    Films are counted exactly. Episodes are counted from each show's episode
+    total, less the episodes this install already has a job for: asking every
+    show for its episodes just to show a number would take minutes on a big
+    library.
+    """
+    settings = settings or config.load()
+    source = library.build(settings)
+    known = db.job_paths()
+    job = "movie" if kind == "movies" else "episode"
+    if kind == "movies":
+        films = source.movies()
+        count = sum(1 for f in films if known.get(f["path"]) not in SETTLED)
+        exact = True
+    else:
+        shows = source.shows()
+        kinds = db.job_kinds()
+        handled = sum(1 for path, status in known.items()
+                      if status in SETTLED and kinds.get(path) == "episode")
+        count = max(0, sum(int(s.get("episodes") or 0) for s in shows) - handled)
+        exact = False
+    typical = db.typical_job(job)
+    if typical["n"]:
+        per_file, seconds = typical["bytes"], typical["seconds"]
+    else:
+        per_file = _bitrate(settings.bitrate_surround) / 8 * TYPICAL_MINUTES[job] * 60
+        seconds = 0.0
+    return {"kind": kind, "count": count, "exact": exact,
+            "bytes": int(per_file * count), "per_file": int(per_file),
+            "seconds": int(seconds * count), "from_history": typical["n"]}
+
+
+def queue_library(kind: str, settings=None) -> int:
+    """Queue every file of this kind that has not been censored. Episodes are
+    gathered show by show, so for those this is run on a thread."""
+    if not _backlog_lock.acquire(blocking=False):
+        return 0
+    backlog_state.update(kind=kind, queued=0, running=True, error="")
+    try:
+        settings = settings or config.load()
+        source = library.build(settings)
+        known = db.job_paths()
+        if kind == "movies":
+            # The same source the Movies page gives a film it queues.
+            name = library.film_source(settings) or "none"
+            for film in source.movies():
+                if known.get(film["path"]) in SETTLED:
+                    continue
+                if db.enqueue(kind="movie", title=film["title"] or Path(film["path"]).stem,
+                              subtitle=str(film.get("year") or ""), path=film["path"],
+                              source=name, source_id=str(film["id"])):
+                    backlog_state["queued"] += 1
+        else:
+            for show in source.shows():
+                if not int(show.get("episodes") or 0):
+                    continue
+                try:
+                    episodes = source.episodes(show["id"])
+                except (arr.ArrError, library.LibraryError, ValueError):
+                    continue
+                for episode in episodes:
+                    if not episode.get("path") or known.get(episode["path"]) in SETTLED:
+                        continue
+                    if db.enqueue(
+                            kind="episode", title=show["title"] or "Show",
+                            subtitle=f"S{int(episode['season']):02d}E{int(episode['episode']):02d}"
+                                     f" · {episode.get('title') or ''}",
+                            # As the show page queues an episode.
+                            path=episode["path"], source="sonarr",
+                            source_id=str(episode["id"])):
+                        backlog_state["queued"] += 1
+        return backlog_state["queued"]
+    except Exception as exc:  # noqa: BLE001
+        backlog_state["error"] = str(exc)
+        print(f"[censarr] censoring the whole library failed: {exc}", flush=True)
+        return backlog_state["queued"]
+    finally:
+        backlog_state["running"] = False
+        _backlog_lock.release()
+
+
 class Worker:
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir

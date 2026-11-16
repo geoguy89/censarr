@@ -136,6 +136,11 @@
     <section class="view" id="view-shows" data-title="Shows" hidden>
       <header class="page-head">
         <h1 tabindex="-1">Shows</h1>
+        <p class="lede">
+          <button type="button" class="btn secondary sm" data-action="censor-all" data-kind="shows"
+            title="Queue every episode on disk that is not censored yet. Each one gets a second audio track, so this takes disk space.">
+            Censor every episode on disk…</button>
+        </p>
       </header>
       <div class="toolbar" role="search">
         <label class="search">
@@ -165,10 +170,13 @@
     <section class="view" id="view-movies" data-title="Movies" hidden>
       <header class="page-head">
         <h1 tabindex="-1">Movies</h1>
-        <p class="lede">
+        <p class="lede lede-row">
           <label class="switch" title="Films your media server adds from now on are censored when they arrive. Nothing already in the library is touched.">
             <input type="checkbox" role="switch" id="films-auto" data-change="watch-films">
             <span class="track" aria-hidden="true"></span><span>Censor new films automatically</span></label>
+          <button type="button" class="btn secondary sm" data-action="censor-all" data-kind="movies"
+            title="Queue every film on disk that is not censored yet. Each one gets a second audio track, so this takes disk space.">
+            Censor every film on disk…</button>
         </p>
       </header>
       <div class="toolbar" role="search">

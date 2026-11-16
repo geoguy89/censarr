@@ -365,3 +365,20 @@ def test_a_marked_film_already_censored_just_loses_its_mark(radarr, home, tmp_pa
     db.monitor_add("radarr", "7", "Coming", "new_only")
     assert worker.Worker(home).check_monitored() == 0
     assert not db.is_monitored("radarr", "7") and db.next_queued() is None
+
+
+def test_censoring_every_episode_queues_what_is_left(sonarr, home):
+    sonarr.route("GET", "/api/v3/series", [
+        {"id": 7, "title": "Show", "statistics": {"episodeFileCount": 3}}])
+    db.enqueue(kind="episode", title="Show", path="/tv/show/s01e01.mkv")
+    db.update(db.next_queued()["id"], status="done", added_bytes=1000,
+              started_at=100.0, finished_at=160.0)
+
+    est = worker.library_backlog("shows")
+    assert est["count"] == 2 and not est["exact"]
+    assert est["bytes"] == 2000 and est["seconds"] == 120
+
+    assert worker.queue_library("shows") == 2
+    assert sorted(queued_titles()) == ["S01E02 · New", "S01E03 · Undated"]
+    assert worker.queue_library("shows") == 0
+    assert worker.library_backlog("shows")["count"] == 0

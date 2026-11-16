@@ -291,6 +291,72 @@ def probe_remote(url: str, model: str, api_key: str = "") -> dict:
     return {"ok": True, "note": "reachable, and it returns word timings"}
 
 
+# ---------------------------------------------------------------------------
+#  A film in pieces
+# ---------------------------------------------------------------------------
+#  faster-whisper turns the whole recording into a spectrogram before it
+#  hears a word, and on the way it holds several full-length copies of it at
+#  once - the framed samples, a double-precision FFT and its single-precision
+#  copy. For a 64-minute episode that is about 3 GB; for a 2h20m film it
+#  passed 6 GB within seconds and the kernel killed the container. Handing it
+#  ten minutes at a time keeps that under half a gigabyte whatever the length.
+#
+#  Each piece ends at the quietest moment near its end rather than at an exact
+#  time, so a cut does not land in the middle of a word.
+
+PIECE_SECONDS = 600
+SEAM_SEARCH_SECONDS = 20.0     # how far back from a piece's end to look for a gap
+SEAM_WINDOW_SECONDS = 0.1      # the loudness is compared over windows this long
+
+
+def _pieces(audio: Path, piece_seconds: float | None = None):
+    """(offset in seconds, float32 samples, whole length in seconds) for each
+    piece of a 16-bit mono WAV, or None for anything else."""
+    import wave
+
+    piece_seconds = piece_seconds or PIECE_SECONDS
+
+    try:
+        handle = wave.open(str(audio), "rb")
+    except (wave.Error, EOFError, OSError):
+        return None
+    if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+        handle.close()
+        return None
+    return _read_pieces(handle, piece_seconds)
+
+
+def _read_pieces(handle, piece_seconds: float):
+    import numpy as np
+
+    rate = handle.getframerate()
+    total = handle.getnframes()
+    length = total / rate
+    piece = int(piece_seconds * rate)
+    window = max(1, int(SEAM_WINDOW_SECONDS * rate))
+    search = int(SEAM_SEARCH_SECONDS * rate)
+    start = 0
+    with handle:
+        while start < total:
+            handle.setpos(start)
+            # The last piece takes whatever is left, rather than leaving a
+            # few seconds to be heard on their own.
+            want = total - start if total - start <= piece + search else piece
+            block = np.frombuffer(handle.readframes(want), dtype=np.int16)
+            if not len(block):
+                break
+            cut = len(block)
+            if start + cut < total and cut > search:
+                tail = block[cut - search:].astype(np.float32)
+                usable = len(tail) // window * window
+                loudness = np.abs(tail[:usable]).reshape(-1, window).mean(axis=1)
+                quiet = int(np.argmin(loudness))
+                cut = cut - search + quiet * window + window // 2
+            samples = block[:cut].astype(np.float32) / 32768.0
+            yield start / rate, samples, length
+            start += int(cut)
+
+
 def transcribe(audio: Path, *, model_name: str = "medium.en",
                device: str = "auto", compute_type: str = "auto",
                trim_silence: bool = False, free_vram=None,
@@ -332,8 +398,7 @@ def transcribe(audio: Path, *, model_name: str = "medium.en",
 
     model = _load_with_patience(model_name, device, compute_type, download_root,
                                 free_vram=free_vram)
-    segments, info = model.transcribe(
-        str(audio),
+    options = dict(
         language="en",
         word_timestamps=True,
         vad_filter=trim_silence,
@@ -343,16 +408,26 @@ def transcribe(audio: Path, *, model_name: str = "medium.en",
     )
 
     words: list[dict] = []
-    duration = float(getattr(info, "duration", 0.0) or 0.0)
-    for segment in segments:  # generator: this is where the time goes
-        for w in (segment.words or []):
-            words.append({"word": w.word, "start": round(float(w.start), 3),
-                          "end": round(float(w.end), 3),
-                          "probability": round(float(getattr(w, "probability", 1.0)), 3)})
-        if progress and duration:
-            progress(min(1.0, float(segment.end) / duration))
+    language = "en"
+    pieces = _pieces(audio)
+    if pieces is None:
+        # Not a WAV this can read in pieces: hand Whisper the file whole.
+        pieces = iter([(0.0, str(audio), 0.0)])
+    duration = 0.0
+    for offset, samples, total in pieces:
+        segments, info = model.transcribe(samples, **options)
+        language = str(getattr(info, "language", language) or language)
+        duration = total or float(getattr(info, "duration", 0.0) or 0.0)
+        for segment in segments:  # generator: this is where the time goes
+            for w in (segment.words or []):
+                words.append({"word": w.word,
+                              "start": round(float(w.start) + offset, 3),
+                              "end": round(float(w.end) + offset, 3),
+                              "probability": round(float(getattr(w, "probability", 1.0)), 3)})
+            if progress and duration:
+                progress(min(1.0, (float(segment.end) + offset) / duration))
 
-    transcript = Transcript(words=words, language=str(getattr(info, "language", "en")),
+    transcript = Transcript(words=words, language=language,
                             duration=duration, model=model_name)
     if cache_file:
         cache_file.write_text(json.dumps(transcript.to_json()), encoding="utf8")
